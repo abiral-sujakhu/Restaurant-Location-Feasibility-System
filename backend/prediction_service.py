@@ -1,75 +1,25 @@
 # ============================================================
 # prediction_service.py
 # ============================================================
-# This module:
-#
-# 1. Loads the saved joblib model package
-# 2. Extracts the trained sklearn pipeline
-# 3. Validates model features
-# 4. Generates the feasibility prediction
-# 5. Returns class probabilities
 
 from pathlib import Path
-from typing import Any, Dict, Union
+from typing import Any, Dict
 
 import joblib
 import numpy as np
 import pandas as pd
 
 
-# ------------------------------------------------------------
-# Model path
-# ------------------------------------------------------------
-
-BACKEND_DIRECTORY = Path(__file__).resolve().parent
+BASE_DIRECTORY = Path(__file__).resolve().parent
 
 MODEL_PATH = (
-    BACKEND_DIRECTORY
+    BASE_DIRECTORY
     / "models"
     / "restaurant_feasibility_pipeline.joblib"
 )
 
 
-if not MODEL_PATH.exists():
-    raise FileNotFoundError(
-        "The trained model file was not found.\n"
-        f"Expected location: {MODEL_PATH}"
-    )
-
-
-# ------------------------------------------------------------
-# Load saved model package
-# ------------------------------------------------------------
-
-model_package = joblib.load(MODEL_PATH)
-
-
-if not isinstance(model_package, dict):
-    raise TypeError(
-        "The saved joblib file must contain a dictionary with "
-        "'pipeline' and 'metadata' entries."
-    )
-
-
-if "pipeline" not in model_package:
-    raise KeyError(
-        "The saved model package does not contain 'pipeline'."
-    )
-
-
-model_pipeline = model_package["pipeline"]
-
-model_metadata = model_package.get(
-    "metadata",
-    {}
-)
-
-
-# ------------------------------------------------------------
-# Expected model features
-# ------------------------------------------------------------
-
-DEFAULT_MODEL_FEATURES = [
+MODEL_FEATURES = [
     "bank_count_500m",
     "bus_stop_count_500m",
     "cinema_count_500m",
@@ -91,64 +41,42 @@ DEFAULT_MODEL_FEATURES = [
 ]
 
 
-MODEL_FEATURES = model_metadata.get(
-    "model_features",
-    model_metadata.get(
-        "feature_names",
-        DEFAULT_MODEL_FEATURES
+if not MODEL_PATH.exists():
+    raise FileNotFoundError(
+        f"Model file was not found: {MODEL_PATH}"
     )
+
+
+model_package = joblib.load(
+    MODEL_PATH
 )
 
 
-# ------------------------------------------------------------
-# Label conversion
-# ------------------------------------------------------------
-
-DEFAULT_LABEL_MAPPING = {
-    0: "High",
-    1: "Low",
-    2: "Moderate"
-}
-
-
-def normalise_label_mapping(
-    raw_mapping: Any
-) -> Dict[Any, str]:
-    """
-    Convert saved label mapping into a consistent dictionary.
-
-    The metadata may store keys as strings or integers.
-    """
-
-    if not isinstance(raw_mapping, dict):
-        return DEFAULT_LABEL_MAPPING
-
-    cleaned_mapping: Dict[Any, str] = {}
-
-    for key, value in raw_mapping.items():
-
-        try:
-            cleaned_key: Any = int(key)
-        except (TypeError, ValueError):
-            cleaned_key = key
-
-        cleaned_mapping[cleaned_key] = str(value)
-
-    return cleaned_mapping
-
-
-LABEL_MAPPING = normalise_label_mapping(
-    model_metadata.get(
-        "label_mapping",
-        DEFAULT_LABEL_MAPPING
+if isinstance(model_package, dict):
+    model_pipeline = model_package.get(
+        "pipeline"
     )
-)
+
+    model_metadata = model_package.get(
+        "metadata",
+        {}
+    )
+else:
+    model_pipeline = model_package
+    model_metadata = {}
 
 
-def convert_numpy_value(value: Any) -> Any:
+if model_pipeline is None:
+    raise ValueError(
+        "The saved model package does not contain a pipeline."
+    )
+
+
+def convert_numpy_value(
+    value: Any
+) -> Any:
     """
-    Convert NumPy scalar values to normal Python values so
-    FastAPI can serialize them.
+    Convert NumPy values into normal Python values.
     """
 
     if isinstance(value, np.generic):
@@ -157,40 +85,66 @@ def convert_numpy_value(value: Any) -> Any:
     return value
 
 
-def get_label_name(class_value: Any) -> str:
+def class_to_label(
+    class_value: Any
+) -> str:
     """
-    Convert a predicted class into Low, Moderate or High.
+    Convert the model class into its readable label.
     """
 
-    class_value = convert_numpy_value(class_value)
+    class_value = convert_numpy_value(
+        class_value
+    )
 
-    if class_value in LABEL_MAPPING:
-        return LABEL_MAPPING[class_value]
+    metadata_mapping = model_metadata.get(
+        "label_mapping"
+    )
 
-    class_string = str(class_value)
+    if isinstance(metadata_mapping, dict):
 
-    if class_string in LABEL_MAPPING:
-        return LABEL_MAPPING[class_string]
+        if class_value in metadata_mapping:
+            return str(
+                metadata_mapping[class_value]
+            )
 
-    # Some models may directly predict text labels.
-    if class_string in {"Low", "Moderate", "High"}:
-        return class_string
+        if str(class_value) in metadata_mapping:
+            return str(
+                metadata_mapping[str(class_value)]
+            )
 
-    return class_string
+    # The model may already predict textual labels.
+    if str(class_value) in {
+        "Low",
+        "Moderate",
+        "High"
+    }:
+        return str(class_value)
+
+    # Change this only if your saved model predicts encoded
+    # numeric target values and no label mapping was saved.
+    fallback_mapping = {
+        0: "High",
+        1: "Low",
+        2: "Moderate"
+    }
+
+    return fallback_mapping.get(
+        class_value,
+        str(class_value)
+    )
 
 
-def validate_location_features(
+def validate_features(
     location_features: Dict[str, Any]
 ) -> None:
     """
-    Confirm that the feature dictionary contains every model
-    input expected by the trained pipeline.
+    Validate the features before prediction.
     """
 
     missing_features = [
-        feature_name
-        for feature_name in MODEL_FEATURES
-        if feature_name not in location_features
+        feature
+        for feature in MODEL_FEATURES
+        if feature not in location_features
     ]
 
     if missing_features:
@@ -199,74 +153,73 @@ def validate_location_features(
             + ", ".join(missing_features)
         )
 
-    if not location_features.get("search_area"):
-        raise ValueError(
-            "The search_area feature cannot be empty."
+
+def get_classifier_classes() -> list:
+    """
+    Obtain class order used by predict_proba.
+    """
+
+    if hasattr(model_pipeline, "classes_"):
+        return list(
+            model_pipeline.classes_
         )
+
+    if hasattr(model_pipeline, "named_steps"):
+
+        for step in reversed(
+            list(
+                model_pipeline.named_steps.values()
+            )
+        ):
+            if hasattr(step, "classes_"):
+                return list(step.classes_)
+
+    return []
 
 
 def predict_feasibility(
     location_features: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
-    Generate a feasibility prediction from collected location
-    features.
-
-    Returns
-    -------
-    dict
-        Contains:
-        - predicted_class
-        - predicted_label
-        - probabilities
+    Predict restaurant-location feasibility.
     """
 
-    validate_location_features(
+    validate_features(
         location_features
     )
 
-    # Preserve exactly the feature order expected by the model.
     model_input = pd.DataFrame(
         [location_features],
         columns=MODEL_FEATURES
     )
 
-    predicted_value = model_pipeline.predict(
+    predicted_class = model_pipeline.predict(
         model_input
     )[0]
 
-    predicted_value = convert_numpy_value(
-        predicted_value
+    predicted_class = convert_numpy_value(
+        predicted_class
     )
 
-    predicted_label = get_label_name(
-        predicted_value
+    predicted_label = class_to_label(
+        predicted_class
     )
 
     probabilities: Dict[str, float] = {}
 
     if hasattr(model_pipeline, "predict_proba"):
 
-        probability_values = model_pipeline.predict_proba(
-            model_input
-        )[0]
+        probability_values = (
+            model_pipeline.predict_proba(
+                model_input
+            )[0]
+        )
 
-        # Retrieve the final classifier classes.
-        classifier = None
+        class_values = get_classifier_classes()
 
-        if hasattr(model_pipeline, "named_steps"):
-            classifier = model_pipeline.named_steps.get(
-                "classifier"
-            )
-
-        if classifier is not None and hasattr(
-            classifier,
-            "classes_"
-        ):
-            class_values = classifier.classes_
-        else:
-            class_values = range(
-                len(probability_values)
+        if not class_values:
+            class_values = list(
+                range(len(probability_values))
             )
 
         for class_value, probability in zip(
@@ -277,17 +230,17 @@ def predict_feasibility(
                 class_value
             )
 
-            class_label = get_label_name(
+            label = class_to_label(
                 class_value
             )
 
-            probabilities[class_label] = round(
+            probabilities[label] = round(
                 float(probability),
                 6
             )
 
     return {
-        "predicted_class": predicted_value,
+        "predicted_class": predicted_class,
         "predicted_label": predicted_label,
         "probabilities": probabilities
     }
@@ -295,7 +248,7 @@ def predict_feasibility(
 
 def get_model_information() -> Dict[str, Any]:
     """
-    Return safe model information for the health endpoint.
+    Return model information for the health endpoint.
     """
 
     return {
@@ -303,14 +256,5 @@ def get_model_information() -> Dict[str, Any]:
             "model_name",
             type(model_pipeline).__name__
         ),
-
-        "test_accuracy": model_metadata.get(
-            "test_accuracy"
-        ),
-
-        "test_macro_f1": model_metadata.get(
-            "test_macro_f1"
-        ),
-
         "model_features": MODEL_FEATURES
     }

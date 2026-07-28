@@ -5,6 +5,4 @@ numpy
 scikit-learn
 joblib
 pydantic
-python-dotenv
-requests
 xgboost
