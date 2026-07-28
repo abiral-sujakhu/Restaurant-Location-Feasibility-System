@@ -14,3 +14,4 @@ notebooks/cache/
 #Data
 data_by_avi/
 
+backend/.env
