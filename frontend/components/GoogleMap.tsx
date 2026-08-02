@@ -92,7 +92,7 @@ export default function GoogleMapComponent() {
 
   return (
     <LoadScript googleMapsApiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!}>
-      <div className="flex h-full min-h-0 flex-col gap-5 overflow-hidden rounded-2xl bg-gray-100 p-5 lg:flex-row">
+      <div className="flex h-full min-h-0 flex-col gap-5 overflow-hidden bg-gray-100 p-5 lg:flex-row">
         <aside className="w-full overflow-y-auto rounded-2xl bg-white p-6 text-black shadow-lg lg:w-96 lg:shrink-0">
           <h2 className="mb-6 text-2xl font-semibold">Selected Location</h2>
 
