@@ -19,28 +19,6 @@ MODEL_PATH = (
 )
 
 
-MODEL_FEATURES = [
-    "bank_count_500m",
-    "bus_stop_count_500m",
-    "cinema_count_500m",
-    "clinic_count_500m",
-    "college_count_500m",
-    "hospital_count_500m",
-    "museum_count_500m",
-    "office_count_500m",
-    "parking_space_count_500m",
-    "recreation_count_500m",
-    "retail_count_500m",
-    "school_count_500m",
-    "temple_count_500m",
-    "nearest_restaurant_m",
-    "competitor_count_500m",
-    "avg_restaurant_rating_500m",
-    "avg_review_ratings_500m",
-    "search_area"
-]
-
-
 if not MODEL_PATH.exists():
     raise FileNotFoundError(
         f"Model file was not found: {MODEL_PATH}"
@@ -70,6 +48,14 @@ if model_pipeline is None:
     raise ValueError(
         "The saved model package does not contain a pipeline."
     )
+
+
+# The saved package is the source of truth when the dataset/model changes.
+MODEL_FEATURES = model_metadata.get("model_features")
+if not MODEL_FEATURES:
+    MODEL_FEATURES = list(getattr(model_pipeline, "feature_names_in_", []))
+if not MODEL_FEATURES:
+    raise ValueError("The saved model does not declare its input features.")
 
 
 def convert_numpy_value(
@@ -242,6 +228,7 @@ def predict_feasibility(
     return {
         "predicted_class": predicted_class,
         "predicted_label": predicted_label,
+        "confidence": max(probabilities.values()) if probabilities else 1.0,
         "probabilities": probabilities
     }
 

@@ -1,0 +1,19 @@
+{
+    "input_features": {
+        "Demand": 0.22615000000000002,
+        "Accessibility": 0.39595,
+        "Competition": 0.4916,
+        "Population": 0.352,
+        "search_area": "Baneshwor"
+    },
+    "prediction": {
+        "predicted_class": 1,
+        "predicted_label": "Moderate",
+        "confidence": 1.0,
+        "probabilities": {
+            "Low": 0.0,
+            "Moderate": 1.0,
+            "High": 0.0
+        }
+    }
+}

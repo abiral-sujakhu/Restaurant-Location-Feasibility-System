@@ -55,6 +55,7 @@ class PredictionResponse(BaseModel):
 
     predicted_class: Union[int, str]
     predicted_label: str
+    confidence: float
 
     probabilities: Dict[str, float]
 

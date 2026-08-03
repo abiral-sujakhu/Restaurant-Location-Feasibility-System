@@ -1,0 +1,24 @@
+{
+    "project_root": "C:\\Users\\mausa\\Desktop\\grouping_approach\\minor_prj",
+    "model_path": "C:\\Users\\mausa\\Desktop\\grouping_approach\\minor_prj\\backend\\models\\restaurant_feasibility_pipeline.joblib",
+    "dataset_path": "C:\\Users\\mausa\\Desktop\\grouping_approach\\minor_prj\\data\\processed\\dataset_final_entropy.csv",
+    "dataset_name": "dataset_final_entropy.csv",
+    "model_name": "Logistic Regression",
+    "number_of_features": 5,
+    "numeric_features": [
+        "Demand",
+        "Accessibility",
+        "Competition",
+        "Population"
+    ],
+    "categorical_features": [
+        "search_area"
+    ],
+    "label_mapping": {
+        "0": "Low",
+        "1": "Moderate",
+        "2": "High"
+    },
+    "single_prediction_function": "predict_location_feasibility",
+    "batch_prediction_function": "predict_multiple_locations"
+}

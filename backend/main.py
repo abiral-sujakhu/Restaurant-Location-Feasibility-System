@@ -13,9 +13,8 @@ from area_service import (
 )
 
 from location_feature_service import (
+    FEATURE_DF,
     FEATURE_RADIUS_M,
-    POI_DF,
-    RESTAURANT_DF,
     collect_location_features
 )
 
@@ -65,7 +64,7 @@ def root() -> dict:
         "message": (
             "Restaurant Location Feasibility API is running."
         ),
-        "data_source": "local CSV datasets",
+        "data_source": "dataset_final_entropy.csv",
         "google_places_api_used": False,
         "supported_area_count": len(STUDY_AREAS),
         "feature_radius_m": FEATURE_RADIUS_M
@@ -81,10 +80,8 @@ def health_check() -> dict:
     return {
         "status": "healthy",
         "model_loaded": True,
-        "poi_dataset_loaded": True,
-        "restaurant_dataset_loaded": True,
-        "poi_count": len(POI_DF),
-        "restaurant_count": len(RESTAURANT_DF),
+        "feature_dataset_loaded": True,
+        "feature_sample_count": len(FEATURE_DF),
         **get_model_information()
     }
 
@@ -166,6 +163,8 @@ def predict_selected_location(
             "predicted_label": prediction[
                 "predicted_label"
             ],
+
+            "confidence": prediction["confidence"],
 
             "probabilities": prediction[
                 "probabilities"

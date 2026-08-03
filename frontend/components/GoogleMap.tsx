@@ -21,6 +21,7 @@ type PredictionResponse = {
   };
   predicted_class: number | string;
   predicted_label: string;
+  confidence: number;
   probabilities: Record<string, number>;
   collected_features: Record<string, number | string>;
 };
@@ -145,6 +146,9 @@ export default function GoogleMapComponent() {
               </p>
 
               <h4 className="mt-5 font-semibold">Probabilities</h4>
+              <p className="mt-1 text-sm text-gray-600">
+                Confidence: {(prediction.confidence * 100).toFixed(1)}%
+              </p>
               <div className="mt-2 space-y-2">
                 {Object.entries(prediction.probabilities).map(([label, value]) => (
                   <div className="flex justify-between text-sm" key={label}>
@@ -156,7 +160,7 @@ export default function GoogleMapComponent() {
 
               <details className="mt-5">
                 <summary className="cursor-pointer font-semibold">
-                  Collected features
+                  Estimated model factors
                 </summary>
                 <dl className="mt-3 space-y-2 text-sm">
                   {Object.entries(prediction.collected_features).map(
