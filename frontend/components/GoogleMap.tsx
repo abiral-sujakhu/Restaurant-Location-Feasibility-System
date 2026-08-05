@@ -23,6 +23,18 @@ type PredictionResponse = {
   predicted_label: string;
   confidence: number;
   probabilities: Record<string, number>;
+  explanation: {
+    explained_label: string;
+    summary: string;
+    factors: Array<{
+      feature: string;
+      direction: "supports" | "opposes";
+      strength: string;
+      impact: number;
+      relative_impact: number;
+      description: string;
+    }>;
+  };
   collected_features: Record<string, number | string>;
 };
 
@@ -145,36 +157,39 @@ export default function GoogleMapComponent() {
                 )} m from center
               </p>
 
-              <h4 className="mt-5 font-semibold">Probabilities</h4>
-              <p className="mt-1 text-sm text-gray-600">
-                Confidence: {(prediction.confidence * 100).toFixed(1)}%
-              </p>
-              <div className="mt-2 space-y-2">
-                {Object.entries(prediction.probabilities).map(([label, value]) => (
-                  <div className="flex justify-between text-sm" key={label}>
-                    <span>{label}</span>
-                    <span className="font-semibold">{(value * 100).toFixed(1)}%</span>
-                  </div>
-                ))}
-              </div>
-
-              <details className="mt-5">
-                <summary className="cursor-pointer font-semibold">
-                  Estimated model factors
-                </summary>
-                <dl className="mt-3 space-y-2 text-sm">
-                  {Object.entries(prediction.collected_features).map(
-                    ([name, value]) => (
-                      <div className="flex justify-between gap-4" key={name}>
-                        <dt className="capitalize text-gray-600">
-                          {readableFeatureName(name)}
-                        </dt>
-                        <dd className="font-medium">{value}</dd>
+              <div className="mt-5 rounded-xl border border-blue-100 bg-blue-50 p-4">
+                <h4 className="font-semibold text-blue-950">Why this result?</h4>
+                <p className="mt-2 text-sm leading-6 text-blue-900">
+                  {prediction.explanation.summary}
+                </p>
+                <div className="mt-4 space-y-3">
+                  {prediction.explanation.factors.slice(0, 4).map((factor) => (
+                    <div key={factor.feature}>
+                      <div className="flex items-center justify-between gap-3 text-sm">
+                        <span className="capitalize text-gray-700">
+                          {readableFeatureName(factor.feature)}
+                        </span>
+                        <span className={factor.direction === "supports" ? "font-semibold text-emerald-700" : "font-semibold text-amber-700"}>
+                          {factor.strength} {factor.direction}
+                        </span>
                       </div>
-                    ),
-                  )}
-                </dl>
-              </details>
+                      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-200">
+                        <div
+                          className={factor.direction === "supports" ? "h-full rounded-full bg-emerald-500" : "h-full rounded-full bg-amber-500"}
+                          style={{ width: `${Math.max(8, factor.relative_impact * 100)}%` }}
+                        />
+                      </div>
+                      <p className="mt-2 text-xs leading-5 text-gray-600">
+                        {factor.description}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+                <p className="mt-4 text-xs leading-5 text-gray-500">
+                  SHAP shows how each factor moved the model toward or away from
+                  the predicted feasibility class.
+                </p>
+              </div>
             </section>
           )}
         </aside>

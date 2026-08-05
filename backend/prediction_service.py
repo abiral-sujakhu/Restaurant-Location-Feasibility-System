@@ -8,6 +8,9 @@ from typing import Any, Dict
 import joblib
 import numpy as np
 import pandas as pd
+import shap
+
+from location_feature_service import FEATURE_DF
 
 
 BASE_DIRECTORY = Path(__file__).resolve().parent
@@ -56,6 +59,48 @@ if not MODEL_FEATURES:
     MODEL_FEATURES = list(getattr(model_pipeline, "feature_names_in_", []))
 if not MODEL_FEATURES:
     raise ValueError("The saved model does not declare its input features.")
+
+
+def _pipeline_parts() -> tuple[Any, Any]:
+    """Return the fitted preprocessing and classifier pipeline steps."""
+    if not hasattr(model_pipeline, "named_steps"):
+        raise ValueError("SHAP explanations require a preprocessing pipeline.")
+    preprocessor = model_pipeline.named_steps.get("preprocessor")
+    classifier = model_pipeline.named_steps.get("classifier")
+    if preprocessor is None or classifier is None:
+        raise ValueError("The model pipeline cannot be explained with SHAP.")
+    return preprocessor, classifier
+
+
+def _original_feature_name(transformed_name: str) -> str:
+    """Map a transformed column back to the feature a user understands."""
+    name = transformed_name.split("__", 1)[-1]
+    for feature in MODEL_FEATURES:
+        if name == feature or name.startswith(f"{feature}_"):
+            return feature
+    return name
+
+
+def _build_shap_explainer() -> tuple[Any, Any, list[str]]:
+    """Build one reusable explainer from a representative training background."""
+    preprocessor, classifier = _pipeline_parts()
+    background_frame = FEATURE_DF[MODEL_FEATURES].sample(
+        n=min(100, len(FEATURE_DF)), random_state=42
+    )
+    background = preprocessor.transform(background_frame)
+    if hasattr(background, "toarray"):
+        background = background.toarray()
+    feature_names = list(preprocessor.get_feature_names_out())
+    return shap.LinearExplainer(classifier, background), preprocessor, feature_names
+
+
+SHAP_EXPLAINER, SHAP_PREPROCESSOR, TRANSFORMED_FEATURE_NAMES = _build_shap_explainer()
+EXPLAINED_FEATURES = {
+    "Demand",
+    "Population",
+    "Accessibility",
+    "Competition",
+}
 
 
 def convert_numpy_value(
@@ -164,7 +209,8 @@ def get_classifier_classes() -> list:
 
 
 def predict_feasibility(
-    location_features: Dict[str, Any]
+    location_features: Dict[str, Any],
+    location_evidence: Dict[str, str] | None = None
 ) -> Dict[str, Any]:
     """
     Predict restaurant-location feasibility.
@@ -229,7 +275,72 @@ def predict_feasibility(
         "predicted_class": predicted_class,
         "predicted_label": predicted_label,
         "confidence": max(probabilities.values()) if probabilities else 1.0,
-        "probabilities": probabilities
+        "probabilities": probabilities,
+        "explanation": explain_prediction(
+            model_input, predicted_class, location_evidence or {}
+        )
+    }
+
+
+def explain_prediction(
+    model_input: pd.DataFrame,
+    predicted_class: Any,
+    location_evidence: Dict[str, str],
+) -> Dict[str, Any]:
+    """Explain the predicted class and turn SHAP values into frontend insights."""
+    transformed = SHAP_PREPROCESSOR.transform(model_input)
+    if hasattr(transformed, "toarray"):
+        transformed = transformed.toarray()
+
+    values = np.asarray(SHAP_EXPLAINER(transformed).values)
+    classes = [convert_numpy_value(value) for value in get_classifier_classes()]
+    class_index = classes.index(predicted_class)
+    if values.ndim == 3:
+        class_values = values[0, :, class_index]
+    elif values.ndim == 2:
+        class_values = values[0]
+    else:
+        raise ValueError(f"Unexpected SHAP output shape: {values.shape}")
+
+    grouped: Dict[str, float] = {}
+    for transformed_name, shap_value in zip(TRANSFORMED_FEATURE_NAMES, class_values):
+        original_name = _original_feature_name(transformed_name)
+        if original_name not in EXPLAINED_FEATURES:
+            continue
+        grouped[original_name] = grouped.get(original_name, 0.0) + float(shap_value)
+
+    ranked = sorted(grouped.items(), key=lambda item: abs(item[1]), reverse=True)
+    max_impact = max((abs(value) for _, value in ranked), default=0.0)
+    factors = []
+    for feature, shap_value in ranked:
+        relative_impact = abs(shap_value) / max_impact if max_impact else 0.0
+        strength = (
+            "strongly" if relative_impact >= 0.67
+            else "moderately" if relative_impact >= 0.33
+            else "slightly"
+        )
+        factors.append({
+            "feature": feature,
+            "direction": "supports" if shap_value >= 0 else "opposes",
+            "strength": strength,
+            "impact": round(shap_value, 6),
+            "relative_impact": round(relative_impact, 6),
+            "description": location_evidence.get(feature, ""),
+        })
+
+    leading = factors[:2]
+    summary = (
+        "; ".join(
+            f"{item['feature']} {item['strength']} {item['direction']} this result"
+            for item in leading
+        ) + "."
+        if leading
+        else "No model factor had a measurable effect on this result."
+    )
+    return {
+        "explained_label": class_to_label(predicted_class),
+        "summary": summary,
+        "factors": factors,
     }
 
 

@@ -15,6 +15,7 @@ from area_service import (
 from location_feature_service import (
     FEATURE_DF,
     FEATURE_RADIUS_M,
+    collect_location_evidence,
     collect_location_features
 )
 
@@ -135,9 +136,16 @@ def predict_selected_location(
             search_area=search_area
         )
 
+        location_evidence = collect_location_evidence(
+            latitude=request.latitude,
+            longitude=request.longitude,
+            search_area=search_area
+        )
+
         # Step 3: Predict using the saved ML pipeline.
         prediction = predict_feasibility(
-            location_features
+            location_features,
+            location_evidence
         )
 
         return {
@@ -168,6 +176,10 @@ def predict_selected_location(
 
             "probabilities": prediction[
                 "probabilities"
+            ],
+
+            "explanation": prediction[
+                "explanation"
             ],
 
             "collected_features": location_features

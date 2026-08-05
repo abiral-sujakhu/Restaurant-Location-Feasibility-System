@@ -47,6 +47,21 @@ class AreaInformation(BaseModel):
     maximum_allowed_distance_m: float
 
 
+class ShapFactor(BaseModel):
+    feature: str
+    direction: str
+    strength: str
+    impact: float
+    relative_impact: float
+    description: str
+
+
+class ShapExplanation(BaseModel):
+    explained_label: str
+    summary: str
+    factors: list[ShapFactor]
+
+
 class PredictionResponse(BaseModel):
     latitude: float
     longitude: float
@@ -58,6 +73,8 @@ class PredictionResponse(BaseModel):
     confidence: float
 
     probabilities: Dict[str, float]
+
+    explanation: ShapExplanation
 
     collected_features: Dict[
         str,
