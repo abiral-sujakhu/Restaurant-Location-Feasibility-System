@@ -14,6 +14,26 @@ const apiBaseUrl =
 const FEATURE_RADIUS_M = 500;
 const DEFAULT_SUPPORTED_RADIUS_M = 1500;
 const HISTORY_KEY = "yogya-site-prediction-history";
+
+// Sub-zones within a selected area's boundary circle -- purely computed
+// offsets from the area center, not tied to any named locality data. Lets
+// someone narrow in on a corner of the circle instead of scanning the
+// whole thing. Offsets are a fraction of the area's own supported radius
+// so every zone stays inside the boundary regardless of which area (they
+// don't all share the same radius) is selected.
+const SUB_ZONE_DIRECTIONS = [
+  { label: "Center", northFraction: 0, eastFraction: 0 },
+  { label: "North", northFraction: 1, eastFraction: 0 },
+  { label: "Northeast", northFraction: 0.71, eastFraction: 0.71 },
+  { label: "East", northFraction: 0, eastFraction: 1 },
+  { label: "Southeast", northFraction: -0.71, eastFraction: 0.71 },
+  { label: "South", northFraction: -1, eastFraction: 0 },
+  { label: "Southwest", northFraction: -0.71, eastFraction: -0.71 },
+  { label: "West", northFraction: 0, eastFraction: -1 },
+  { label: "Northwest", northFraction: 0.71, eastFraction: -0.71 },
+] as const;
+const SUB_ZONE_RADIUS_FRACTION = 0.6;
+const SUB_ZONE_ZOOM = 17;
 const COMPARISON_FACTORS = [
   { key: "Demand", label: "Demand" },
   { key: "Population", label: "Population" },
@@ -32,11 +52,11 @@ const featureRadiusOptions: google.maps.CircleOptions = {
 
 const supportedAreaOptions: google.maps.CircleOptions = {
   clickable: false,
-  fillColor: "#10b981",
-  fillOpacity: 0.06,
-  strokeColor: "#059669",
-  strokeOpacity: 0.55,
-  strokeWeight: 1.5,
+  fillColor: "#facc15",
+  fillOpacity: 0.1,
+  strokeColor: "#eab308",
+  strokeOpacity: 0.95,
+  strokeWeight: 2.5,
 };
 
 const areaCenterOptions: google.maps.CircleOptions = {
@@ -112,8 +132,37 @@ function distanceInMeters(
   return earthRadiusM * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
 }
 
+function offsetLatLng(
+  center: google.maps.LatLngLiteral,
+  northM: number,
+  eastM: number,
+): google.maps.LatLngLiteral {
+  const metersPerDegreeLatitude = 111_320;
+  const lat = center.lat + northM / metersPerDegreeLatitude;
+  const lng =
+    center.lng +
+    eastM / (metersPerDegreeLatitude * Math.cos((center.lat * Math.PI) / 180));
+  return { lat, lng };
+}
+
 function readableFeatureName(name: string) {
   return name.replaceAll("_", " ");
+}
+
+function bearingDegrees(
+  from: google.maps.LatLngLiteral,
+  to: google.maps.LatLngLiteral,
+) {
+  const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
+  const toDegrees = (radians: number) => (radians * 180) / Math.PI;
+  const longitudeDifference = toRadians(to.lng - from.lng);
+  const fromLatitude = toRadians(from.lat);
+  const toLatitude = toRadians(to.lat);
+  const y = Math.sin(longitudeDifference) * Math.cos(toLatitude);
+  const x =
+    Math.cos(fromLatitude) * Math.sin(toLatitude) -
+    Math.sin(fromLatitude) * Math.cos(toLatitude) * Math.cos(longitudeDifference);
+  return (toDegrees(Math.atan2(y, x)) + 360) % 360;
 }
 
 function wrapPdfText(text: string, maximumLength = 88) {
@@ -263,6 +312,8 @@ export default function GoogleMapComponent() {
   const [editingName, setEditingName] = useState("");
   const [map, setMap] = useState<google.maps.Map | null>(null);
   const [studyAreas, setStudyAreas] = useState<StudyArea[]>([]);
+  const [selectedAreaName, setSelectedAreaName] = useState<string | null>(null);
+  const [selectedSubZone, setSelectedSubZone] = useState<string | null>(null);
   const [maximumAreaDistanceM, setMaximumAreaDistanceM] = useState(
     DEFAULT_SUPPORTED_RADIUS_M,
   );
@@ -297,13 +348,7 @@ export default function GoogleMapComponent() {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(nextHistory));
   };
 
-  const handleMapClick = (event: google.maps.MapMouseEvent) => {
-    if (!event.latLng) return;
-
-    const selectedPosition = {
-      lat: event.latLng.lat(),
-      lng: event.latLng.lng(),
-    };
+  const selectPosition = (selectedPosition: google.maps.LatLngLiteral) => {
     const isSupported = studyAreas.some(
       (area) =>
         distanceInMeters(selectedPosition, {
@@ -324,11 +369,34 @@ export default function GoogleMapComponent() {
     setError(null);
   };
 
+  const handleMapClick = (event: google.maps.MapMouseEvent) => {
+    if (!event.latLng) return;
+    selectPosition({ lat: event.latLng.lat(), lng: event.latLng.lng() });
+  };
+
   const focusStudyArea = (areaName: string) => {
     const area = studyAreas.find((candidate) => candidate.name === areaName);
     if (!area || !map) return;
+    setSelectedAreaName(areaName);
+    setSelectedSubZone(null);
     map.panTo({ lat: area.latitude, lng: area.longitude });
-    map.setZoom(14);
+    map.setZoom(15);
+  };
+
+  const focusSubZone = (directionLabel: string) => {
+    const area = studyAreas.find((candidate) => candidate.name === selectedAreaName);
+    const direction = SUB_ZONE_DIRECTIONS.find((candidate) => candidate.label === directionLabel);
+    if (!area || !direction || !map) return;
+
+    setSelectedSubZone(directionLabel);
+    const offsetDistanceM = maximumAreaDistanceM * SUB_ZONE_RADIUS_FRACTION;
+    const target = offsetLatLng(
+      { lat: area.latitude, lng: area.longitude },
+      direction.northFraction * offsetDistanceM,
+      direction.eastFraction * offsetDistanceM,
+    );
+    map.panTo(target);
+    map.setZoom(SUB_ZONE_ZOOM);
   };
 
   const analyzeLocation = async () => {
@@ -372,6 +440,34 @@ export default function GoogleMapComponent() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const visitLocationInStreetView = () => {
+    if (!markerPosition || !map) return;
+
+    const streetViewService = new google.maps.StreetViewService();
+    streetViewService.getPanorama(
+      { location: markerPosition, radius: 75 },
+      (data, status) => {
+        if (status !== google.maps.StreetViewStatus.OK || !data?.location?.latLng) {
+          setError("Street View imagery isn't available near this location.");
+          return;
+        }
+
+        const panoramaPosition = {
+          lat: data.location.latLng.lat(),
+          lng: data.location.latLng.lng(),
+        };
+        const panorama = map.getStreetView();
+        panorama.setPosition(panoramaPosition);
+        panorama.setPov({
+          heading: bearingDegrees(panoramaPosition, markerPosition),
+          pitch: 0,
+        });
+        panorama.setVisible(true);
+        setError(null);
+      },
+    );
   };
 
   const savePrediction = () => {
@@ -530,9 +626,35 @@ export default function GoogleMapComponent() {
               ))}
             </select>
             <p className="mt-2 text-xs leading-5 text-gray-500">
-              Green circles show the {Math.round(maximumAreaDistanceM)} m supported boundary.
+              Yellow circles show the {Math.round(maximumAreaDistanceM)} m supported boundary.
             </p>
           </label>
+
+          {selectedAreaName && (
+            <label className="mb-5 block">
+              <span className="mb-2 block text-sm font-semibold text-gray-700">
+                Narrow down within {selectedAreaName}
+              </span>
+              <select
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                onChange={(event) => focusSubZone(event.target.value)}
+                value={selectedSubZone ?? ""}
+              >
+                <option disabled value="">
+                  Choose a zone
+                </option>
+                {SUB_ZONE_DIRECTIONS.map((direction) => (
+                  <option key={direction.label} value={direction.label}>
+                    {selectedAreaName} - {direction.label}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-2 text-xs leading-5 text-gray-500">
+                Zooms into that part of {selectedAreaName} so you don&apos;t have to
+                search the whole boundary yourself.
+              </p>
+            </label>
+          )}
 
           {areasError && (
             <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
@@ -589,7 +711,15 @@ export default function GoogleMapComponent() {
               </p>
 
               <button
-                className="mt-4 w-full rounded-lg border border-blue-600 px-4 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-50"
+                className="mt-4 w-full rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
+                onClick={visitLocationInStreetView}
+                type="button"
+              >
+                Visit this location (Street View)
+              </button>
+
+              <button
+                className="mt-2 w-full rounded-lg border border-blue-600 px-4 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-50"
                 onClick={savePrediction}
                 type="button"
               >
@@ -795,7 +925,10 @@ export default function GoogleMapComponent() {
             onUnmount={() => setMap(null)}
             zoom={13}
           >
-            {studyAreas.flatMap((area) => {
+            {(selectedAreaName
+              ? studyAreas.filter((area) => area.name === selectedAreaName)
+              : studyAreas
+            ).flatMap((area) => {
               const center = { lat: area.latitude, lng: area.longitude };
               return [
                 <CircleF
