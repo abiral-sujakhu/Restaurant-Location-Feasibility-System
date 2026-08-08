@@ -2,18 +2,16 @@
 
 import { useEffect, useRef, useState } from "react";
 
-const SESSION_KEY = "feasibility-intro-seen";
-
 const SLIDE_MS = 1600;
 const GLOW_DELAY_MS = 500;
 const GLOW_MS = 1500;
 const CLOSE_DELAY_MS = 350;
 const CLOSE_MS = 700;
 
-type Phase = "checking" | "final" | "glow" | "closing" | "done";
+type Phase = "final" | "glow" | "closing" | "done";
 
 export default function IntroAnimation() {
-  const [phase, setPhase] = useState<Phase>("checking");
+  const [phase, setPhase] = useState<Phase>("final");
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
 
   useEffect(() => {
@@ -23,28 +21,15 @@ export default function IntroAnimation() {
       activeTimers.push(setTimeout(fn, delay));
     };
 
-    // sessionStorage/matchMedia only exist client-side, so this check
-    // must happen in an effect rather than during render (SSR-safe).
-    const alreadySeen = sessionStorage.getItem(SESSION_KEY);
-    if (alreadySeen) {
-      // Reading sessionStorage can only happen client-side, so this can't
-      // be computed during render (would break SSR) — the effect is required.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setPhase("done");
-      return;
-    }
-    sessionStorage.setItem(SESSION_KEY, "1");
-
     const reducedMotion = window.matchMedia(
       "(prefers-reduced-motion: reduce)",
     ).matches;
 
     if (reducedMotion) {
-      setPhase("glow");
+      schedule(() => setPhase("glow"), 0);
       schedule(() => setPhase("closing"), 900);
       schedule(() => setPhase("done"), 900 + 400);
     } else {
-      setPhase("final");
       schedule(() => setPhase("glow"), SLIDE_MS + GLOW_DELAY_MS);
       schedule(
         () => setPhase("closing"),
@@ -67,7 +52,7 @@ export default function IntroAnimation() {
     setTimeout(() => setPhase("done"), CLOSE_MS);
   };
 
-  if (phase === "checking" || phase === "done") return null;
+  if (phase === "done") return null;
 
   return (
     <div
