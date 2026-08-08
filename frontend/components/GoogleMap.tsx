@@ -1,72 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { CircleF, GoogleMap, LoadScript, Marker } from "@react-google-maps/api";
-
-const defaultCenter = {
-  lat: 27.7172,
-  lng: 85.324,
-};
-
-const apiBaseUrl =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
-
-const FEATURE_RADIUS_M = 500;
-const DEFAULT_SUPPORTED_RADIUS_M = 1500;
-const HISTORY_KEY = "yogya-site-prediction-history";
-
-// Sub-zones within a selected area's boundary circle -- purely computed
-// offsets from the area center, not tied to any named locality data. Lets
-// someone narrow in on a corner of the circle instead of scanning the
-// whole thing. Offsets are a fraction of the area's own supported radius
-// so every zone stays inside the boundary regardless of which area (they
-// don't all share the same radius) is selected.
-const SUB_ZONE_DIRECTIONS = [
-  { label: "Center", northFraction: 0, eastFraction: 0 },
-  { label: "North", northFraction: 1, eastFraction: 0 },
-  { label: "Northeast", northFraction: 0.71, eastFraction: 0.71 },
-  { label: "East", northFraction: 0, eastFraction: 1 },
-  { label: "Southeast", northFraction: -0.71, eastFraction: 0.71 },
-  { label: "South", northFraction: -1, eastFraction: 0 },
-  { label: "Southwest", northFraction: -0.71, eastFraction: -0.71 },
-  { label: "West", northFraction: 0, eastFraction: -1 },
-  { label: "Northwest", northFraction: 0.71, eastFraction: -0.71 },
-] as const;
-const SUB_ZONE_RADIUS_FRACTION = 0.6;
-const SUB_ZONE_ZOOM = 17;
-const COMPARISON_FACTORS = [
-  { key: "Demand", label: "Demand" },
-  { key: "Population", label: "Population" },
-  { key: "Accessibility", label: "Accessibility" },
-  { key: "Competition", label: "Competition" },
-] as const;
-
-const featureRadiusOptions: google.maps.CircleOptions = {
-  clickable: false,
-  fillColor: "#2563eb",
-  fillOpacity: 0.12,
-  strokeColor: "#2563eb",
-  strokeOpacity: 0.8,
-  strokeWeight: 2,
-};
-
-const supportedAreaOptions: google.maps.CircleOptions = {
-  clickable: false,
-  fillColor: "#facc15",
-  fillOpacity: 0.1,
-  strokeColor: "#eab308",
-  strokeOpacity: 0.95,
-  strokeWeight: 2.5,
-};
-
-const areaCenterOptions: google.maps.CircleOptions = {
-  clickable: false,
-  fillColor: "#047857",
-  fillOpacity: 1,
-  strokeColor: "#ffffff",
-  strokeOpacity: 1,
-  strokeWeight: 2,
-};
 
 type PredictionResponse = {
   latitude: number;
@@ -147,6 +82,13 @@ function offsetLatLng(
 
 function readableFeatureName(name: string) {
   return name.replaceAll("_", " ");
+}
+
+function resultBadgeClasses(label: string) {
+  const normalized = label.toLowerCase();
+  if (normalized.includes("high")) return "bg-emerald-100 text-emerald-700";
+  if (normalized.includes("low")) return "bg-red-100 text-red-700";
+  return "bg-amber-100 text-amber-700";
 }
 
 function bearingDegrees(
@@ -300,6 +242,168 @@ function createTextPdf(lines: string[], prediction: PredictionResponse) {
   return new Blob([pdf], { type: "application/pdf" });
 }
 
+const defaultCenter = {
+  lat: 27.7172,
+  lng: 85.324,
+};
+
+const apiBaseUrl =
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
+
+const FEATURE_RADIUS_M = 500;
+const DEFAULT_SUPPORTED_RADIUS_M = 1500;
+const HISTORY_KEY = "yogya-site-prediction-history";
+
+// Sub-zones within a selected area's boundary circle -- purely computed
+// offsets from the area center, not tied to any named locality data. Lets
+// someone narrow in on a corner of the circle instead of scanning the
+// whole thing. Offsets are a fraction of the area's own supported radius
+// so every zone stays inside the boundary regardless of which area (they
+// don't all share the same radius) is selected.
+const SUB_ZONE_DIRECTIONS = [
+  { label: "Center", northFraction: 0, eastFraction: 0 },
+  { label: "North", northFraction: 1, eastFraction: 0 },
+  { label: "Northeast", northFraction: 0.71, eastFraction: 0.71 },
+  { label: "East", northFraction: 0, eastFraction: 1 },
+  { label: "Southeast", northFraction: -0.71, eastFraction: 0.71 },
+  { label: "South", northFraction: -1, eastFraction: 0 },
+  { label: "Southwest", northFraction: -0.71, eastFraction: -0.71 },
+  { label: "West", northFraction: 0, eastFraction: -1 },
+  { label: "Northwest", northFraction: 0.71, eastFraction: -0.71 },
+] as const;
+const SUB_ZONE_RADIUS_FRACTION = 0.6;
+const SUB_ZONE_ZOOM = 17;
+const COMPARISON_FACTORS = [
+  { key: "Demand", label: "Demand" },
+  { key: "Population", label: "Population" },
+  { key: "Accessibility", label: "Accessibility" },
+  { key: "Competition", label: "Competition" },
+] as const;
+const featureRadiusOptions: google.maps.CircleOptions = {
+  clickable: false,
+  fillColor: "#2563eb",
+  fillOpacity: 0.12,
+  strokeColor: "#2563eb",
+  strokeOpacity: 0.8,
+  strokeWeight: 2,
+};
+
+const supportedAreaOptions: google.maps.CircleOptions = {
+  clickable: false,
+  fillColor: "#facc15",
+  fillOpacity: 0.1,
+  strokeColor: "#eab308",
+  strokeOpacity: 0.95,
+  strokeWeight: 2.5,
+};
+
+const areaCenterOptions: google.maps.CircleOptions = {
+  clickable: false,
+  fillColor: "#047857",
+  fillOpacity: 1,
+  strokeColor: "#ffffff",
+  strokeOpacity: 1,
+  strokeWeight: 2,
+};
+
+// Sidebar icon rail. Only "Dashboard" is wired up; the rest are kept for
+// the visual layout and are not functional yet.
+const NAV_ITEMS: Array<{ id: string; label: string; icon: ReactNode }> = [
+  {
+    id: "dashboard",
+    label: "Dashboard",
+    icon: (
+      <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+        <rect height="8" rx="1.5" width="8" x="3" y="3" />
+        <rect height="4" rx="1.5" width="8" x="13" y="3" />
+        <rect height="4" rx="1.5" width="8" x="3" y="15" />
+        <rect height="8" rx="1.5" width="8" x="13" y="9" />
+      </svg>
+    ),
+  },
+  {
+    id: "factors",
+    label: "Factor breakdown",
+    icon: (
+      <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+        <rect height="8" rx="1" width="4" x="4" y="12" />
+        <rect height="13" rx="1" width="4" x="10" y="7" />
+        <rect height="17" rx="1" width="4" x="16" y="3" />
+      </svg>
+    ),
+  },
+  {
+    id: "explainability",
+    label: "Explainability",
+    icon: (
+      <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+        <path d="M4 6h14M4 12h10M4 18h6" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+  {
+    id: "map",
+    label: "Map view",
+    icon: (
+      <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+        <path d="M12 21s7-7.58 7-12a7 7 0 10-14 0c0 4.42 7 12 7 12z" strokeLinejoin="round" />
+        <circle cx="12" cy="9" r="2.3" />
+      </svg>
+    ),
+  },
+  {
+    id: "comparison",
+    label: "Comparison",
+    icon: (
+      <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+        <rect height="16" rx="1.5" width="7" x="4" y="4" />
+        <rect height="16" rx="1.5" width="7" x="13" y="4" />
+      </svg>
+    ),
+  },
+  {
+    id: "history",
+    label: "History",
+    icon: (
+      <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="8.5" />
+        <path d="M12 7.5V12l3.2 2" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    ),
+  },
+  {
+    id: "recommendations",
+    label: "Recommendations",
+    icon: (
+      <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+        <path d="M12 3.5l2.6 5.4 5.9.7-4.3 4.1 1.1 5.9L12 16.8l-5.3 2.8 1.1-5.9-4.3-4.1 5.9-.7L12 3.5z" strokeLinejoin="round" />
+      </svg>
+    ),
+  },
+  {
+    id: "reports",
+    label: "Reports",
+    icon: (
+      <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+        <path d="M7 3h7l4 4v14H7z" strokeLinejoin="round" />
+        <path d="M14 3v4h4" strokeLinejoin="round" />
+        <path d="M9.5 12h6M9.5 15.5h6M9.5 8.5h2" strokeLinecap="round" />
+      </svg>
+    ),
+  },
+  {
+    id: "about",
+    label: "About",
+    icon: (
+      <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="8.5" />
+        <path d="M9.6 9.3a2.4 2.4 0 114.1 1.7c-.7.7-1.7 1.1-1.7 2.4" strokeLinecap="round" strokeLinejoin="round" />
+        <circle cx="12" cy="16.8" fill="currentColor" r="0.6" stroke="none" />
+      </svg>
+    ),
+  },
+];
+
 export default function GoogleMapComponent() {
   const [markerPosition, setMarkerPosition] =
     useState<google.maps.LatLngLiteral | null>(null);
@@ -318,6 +422,8 @@ export default function GoogleMapComponent() {
     DEFAULT_SUPPORTED_RADIUS_M,
   );
   const [areasError, setAreasError] = useState<string | null>(null);
+  const [isDashboardOpen, setIsDashboardOpen] = useState(false);
+  const [isNavExpanded, setIsNavExpanded] = useState(false);
 
   useEffect(() => {
     try {
@@ -359,7 +465,7 @@ export default function GoogleMapComponent() {
 
     if (studyAreas.length > 0 && !isSupported) {
       setError(
-        "That point is outside the supported areas. Select a location inside a green boundary.",
+        "That point is outside the supported areas. Select a location inside a yellow boundary.",
       );
       return;
     }
@@ -600,169 +706,150 @@ export default function GoogleMapComponent() {
     return "is notably stronger in";
   };
 
+  const hasSidebarContent = Boolean(prediction) || history.length > 0 || isDashboardOpen;
+
   return (
     <LoadScript googleMapsApiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY!}>
-      <div className="flex h-full min-h-0 flex-col gap-5 overflow-hidden bg-gray-100 p-5 lg:flex-row">
-        <aside className="w-full overflow-y-auto rounded-2xl bg-white p-6 text-black shadow-lg lg:w-96 lg:shrink-0">
-          <h2 className="mb-6 text-2xl font-semibold">Selected Location</h2>
-
-          <label className="mb-5 block">
-            <span className="mb-2 block text-sm font-semibold text-gray-700">
-              Jump to a supported area
-            </span>
-            <select
-              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
-              defaultValue=""
-              disabled={studyAreas.length === 0}
-              onChange={(event) => focusStudyArea(event.target.value)}
+      <div className="flex h-full min-h-0 flex-row overflow-hidden bg-gray-100">
+        <nav
+          className={`flex shrink-0 flex-col border-r border-gray-200 bg-white py-6 transition-[width] duration-200 ${
+            isNavExpanded ? "w-56 items-stretch px-3" : "w-16 items-center"
+          }`}
+        >
+          <button
+            aria-expanded={isNavExpanded}
+            aria-label={isNavExpanded ? "Collapse sidebar" : "Expand sidebar"}
+            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 ${
+              isNavExpanded ? "ml-4" : ""
+            }`}
+            onClick={() => setIsNavExpanded((current) => !current)}
+            title={isNavExpanded ? "Collapse sidebar" : "Expand sidebar"}
+            type="button"
+          >
+            <svg
+              aria-hidden="true"
+              className="h-5 w-5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              viewBox="0 0 24 24"
             >
-              <option disabled value="">
-                {studyAreas.length > 0 ? "Choose an area" : "Loading areas..."}
-              </option>
-              {studyAreas.map((area) => (
-                <option key={area.name} value={area.name}>
-                  {area.name}
-                </option>
-              ))}
-            </select>
-            <p className="mt-2 text-xs leading-5 text-gray-500">
-              Yellow circles show the {Math.round(maximumAreaDistanceM)} m supported boundary.
-            </p>
-          </label>
+              <path d="M4 6h16M4 12h16M4 18h16" strokeLinecap="round" />
+            </svg>
+          </button>
 
-          {selectedAreaName && (
-            <label className="mb-5 block">
-              <span className="mb-2 block text-sm font-semibold text-gray-700">
-                Narrow down within {selectedAreaName}
-              </span>
-              <select
-                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
-                onChange={(event) => focusSubZone(event.target.value)}
-                value={selectedSubZone ?? ""}
-              >
-                <option disabled value="">
-                  Choose a zone
-                </option>
-                {SUB_ZONE_DIRECTIONS.map((direction) => (
-                  <option key={direction.label} value={direction.label}>
-                    {selectedAreaName} - {direction.label}
-                  </option>
-                ))}
-              </select>
-              <p className="mt-2 text-xs leading-5 text-gray-500">
-                Zooms into that part of {selectedAreaName} so you don&apos;t have to
-                search the whole boundary yourself.
-              </p>
-            </label>
-          )}
+          <div
+            className={`mt-8 flex flex-col gap-5 rounded-2xl bg-gray-50 py-4 ${
+              isNavExpanded ? "items-stretch px-3" : "items-center px-2.5"
+            }`}
+          >
+            {NAV_ITEMS.map((item) => {
+              const isDashboardItem = item.id === "dashboard";
+              const isActive = isDashboardItem && isDashboardOpen;
+              return (
+                <button
+                  aria-label={item.label}
+                  aria-pressed={isActive}
+                  className={`flex items-center rounded-xl transition ${
+                    isNavExpanded ? "h-10 w-full gap-3 px-3" : "h-10 w-10 justify-center"
+                  } ${
+                    isActive
+                      ? "bg-lime-300 text-slate-900"
+                      : "text-gray-400 hover:bg-gray-200 hover:text-gray-700"
+                  }`}
+                  key={item.id}
+                  onClick={
+                    isDashboardItem
+                      ? () => setIsDashboardOpen((current) => !current)
+                      : undefined
+                  }
+                  title={item.label}
+                  type="button"
+                >
+                  {item.icon}
+                  {isNavExpanded && (
+                    <span className="whitespace-nowrap text-sm font-medium">{item.label}</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </nav>
 
-          {areasError && (
-            <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-              {areasError} Start the backend to enable selection validation.
-            </div>
-          )}
-
-          {markerPosition ? (
-            <>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-sm font-bold text-blue-600">Latitude</p>
-                  <p className="font-medium">{markerPosition.lat.toFixed(6)}</p>
-                </div>
-                <div>
-                  <p className="text-sm font-bold text-blue-600">Longitude</p>
-                  <p className="font-medium">{markerPosition.lng.toFixed(6)}</p>
-                </div>
-              </div>
-
-              <button
-                className="mt-5 w-full rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
-                disabled={isLoading}
-                onClick={analyzeLocation}
-                type="button"
-              >
-                {isLoading ? "Analyzing..." : "Analyze location"}
-              </button>
-            </>
-          ) : (
-            <p className="text-gray-500">
-              Click anywhere on the map to select a location.
-            </p>
-          )}
-
-          {error && (
-            <div className="mt-5 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-              {error}
-            </div>
-          )}
+        {hasSidebarContent && (
+        <aside className="w-full overflow-y-auto rounded-2xl bg-white p-6 text-black shadow-lg lg:w-96 lg:shrink-0">
 
           {prediction && (
-            <section className="mt-6 border-t border-gray-200 pt-6">
-              <p className="text-sm font-semibold uppercase tracking-wide text-gray-500">
+            <section className="mt-6 border-t border-gray-100 pt-6">
+              <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">
                 Feasibility result
               </p>
-              <h3 className="mt-1 text-3xl font-bold text-blue-700">
+              <span
+                className={`mt-2 inline-flex items-center rounded-full px-3 py-1 text-sm font-semibold ${resultBadgeClasses(prediction.predicted_label)}`}
+              >
                 {prediction.predicted_label}
-              </h3>
-              <p className="mt-1 text-sm text-gray-600">
-                Area: {prediction.area_information.search_area} · {Math.round(
+              </span>
+              <p className="mt-2 text-sm text-gray-500">
+                {prediction.area_information.search_area} · {Math.round(
                   prediction.area_information.distance_from_area_center_m,
                 )} m from center
               </p>
 
-              <button
-                className="mt-4 w-full rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
-                onClick={visitLocationInStreetView}
-                type="button"
-              >
-                Visit this location (Street View)
-              </button>
+              <div className="mt-4 flex flex-col gap-2">
+                <button
+                  className="w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
+                  onClick={visitLocationInStreetView}
+                  type="button"
+                >
+                  Visit this location (Street View)
+                </button>
 
-              <button
-                className="mt-2 w-full rounded-lg border border-blue-600 px-4 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-50"
-                onClick={savePrediction}
-                type="button"
-              >
-                Save to prediction history
-              </button>
+                <button
+                  className="w-full rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-semibold text-gray-700 transition hover:bg-gray-50"
+                  onClick={savePrediction}
+                  type="button"
+                >
+                  Save to prediction history
+                </button>
 
-              <button
-                className="mt-2 w-full rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800"
-                onClick={downloadPdfReport}
-                type="button"
-              >
-                Download PDF report
-              </button>
+                <button
+                  className="w-full rounded-xl bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800"
+                  onClick={downloadPdfReport}
+                  type="button"
+                >
+                  Download PDF report
+                </button>
+              </div>
 
-              <div className="mt-5 rounded-xl border border-blue-100 bg-blue-50 p-4">
-                <h4 className="font-semibold text-blue-950">Why this result?</h4>
-                <p className="mt-2 text-sm leading-6 text-blue-900">
+              <div className="mt-5 rounded-2xl border border-gray-100 bg-gray-50 p-5">
+                <h4 className="text-sm font-semibold text-gray-900">Why this result?</h4>
+                <p className="mt-1.5 text-sm leading-6 text-gray-600">
                   {prediction.explanation.summary}
                 </p>
-                <div className="mt-4 space-y-3">
+                <div className="mt-5 space-y-4">
                   {prediction.explanation.factors.slice(0, 4).map((factor) => (
-                    <div key={factor.feature}>
+                    <div className="space-y-1.5" key={factor.feature}>
                       <div className="flex items-center justify-between gap-3 text-sm">
-                        <span className="capitalize text-gray-700">
+                        <span className="font-medium capitalize text-gray-700">
                           {readableFeatureName(factor.feature)}
                         </span>
-                        <span className={factor.direction === "supports" ? "font-semibold text-emerald-700" : "font-semibold text-amber-700"}>
+                        <span className={factor.direction === "supports" ? "text-xs font-semibold text-emerald-600" : "text-xs font-semibold text-amber-600"}>
                           {factor.strength} {factor.direction}
                         </span>
                       </div>
-                      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-200">
+                      <div className="h-1.5 overflow-hidden rounded-full bg-gray-200">
                         <div
                           className={factor.direction === "supports" ? "h-full rounded-full bg-emerald-500" : "h-full rounded-full bg-amber-500"}
                           style={{ width: `${Math.max(8, factor.relative_impact * 100)}%` }}
                         />
                       </div>
-                      <p className="mt-2 text-xs leading-5 text-gray-600">
+                      <p className="text-xs leading-5 text-gray-500">
                         {factor.description}
                       </p>
                     </div>
                   ))}
                 </div>
-                <p className="mt-4 text-xs leading-5 text-gray-500">
+                <p className="mt-5 text-xs leading-5 text-gray-400">
                   SHAP shows how each factor moved the model toward or away from
                   the predicted feasibility class.
                 </p>
@@ -770,7 +857,7 @@ export default function GoogleMapComponent() {
             </section>
           )}
 
-          <section className="mt-6 border-t border-gray-200 pt-6">
+          <section className={prediction ? "mt-6 border-t border-gray-200 pt-6" : ""}>
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-lg font-semibold">Prediction history</h3>
               <span className="text-xs text-gray-500">{history.length} saved</span>
@@ -915,13 +1002,115 @@ export default function GoogleMapComponent() {
             )}
           </section>
         </aside>
+        )}
 
-        <div className="min-h-80 flex-1 overflow-hidden rounded-2xl shadow-lg">
+        <div className="relative min-h-80 flex-1 overflow-hidden rounded-2xl shadow-lg">
+          <div className="absolute top-4 right-4 z-10 w-[360px] rounded-2xl bg-white p-4 text-black shadow-lg">
+            <h2 className="mb-4 text-lg font-semibold text-[#0b1e2b]">Choose Location</h2>
+
+            <label className="mb-4 block">
+              <span className="mb-2 block text-sm font-semibold text-gray-700">
+                Jump to a supported area
+              </span>
+              <select
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-lime-500 focus:ring-2 focus:ring-lime-100"
+                defaultValue=""
+                disabled={studyAreas.length === 0}
+                onChange={(event) => focusStudyArea(event.target.value)}
+              >
+                <option disabled value="">
+                  {studyAreas.length > 0 ? "Choose an area" : "Loading areas..."}
+                </option>
+                {studyAreas.map((area) => (
+                  <option key={area.name} value={area.name}>
+                    {area.name}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-2 text-xs leading-5 text-gray-500">
+                Yellow circles show the {Math.round(maximumAreaDistanceM)} m supported boundary.
+              </p>
+            </label>
+
+            {selectedAreaName && (
+              <label className="mb-4 block">
+                <span className="mb-2 block text-sm font-semibold text-gray-700">
+                  Narrow down within {selectedAreaName}
+                </span>
+                <select
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-lime-500 focus:ring-2 focus:ring-lime-100"
+                  onChange={(event) => focusSubZone(event.target.value)}
+                  value={selectedSubZone ?? ""}
+                >
+                  <option disabled value="">
+                    Choose a zone
+                  </option>
+                  {SUB_ZONE_DIRECTIONS.map((direction) => (
+                    <option key={direction.label} value={direction.label}>
+                      {selectedAreaName} - {direction.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-2 text-xs leading-5 text-gray-500">
+                  Zooms into that part of {selectedAreaName} so you don&apos;t have to
+                  search the whole boundary yourself.
+                </p>
+              </label>
+            )}
+
+            {areasError && (
+              <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                {areasError} Start the backend to enable selection validation.
+              </div>
+            )}
+
+            {error && (
+              <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                {error}
+              </div>
+            )}
+
+            {markerPosition ? (
+              <>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-sm font-bold text-blue-600">Latitude</p>
+                    <p className="font-medium">{markerPosition.lat.toFixed(6)}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-blue-600">Longitude</p>
+                    <p className="font-medium">{markerPosition.lng.toFixed(6)}</p>
+                  </div>
+                </div>
+
+                <button
+                  className="mt-4 w-full rounded-lg bg-blue-600 px-4 py-3 font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+                  disabled={isLoading}
+                  onClick={analyzeLocation}
+                  type="button"
+                >
+                  {isLoading ? "Analyzing..." : "Analyze location"}
+                </button>
+              </>
+            ) : (
+              <p className="text-sm text-gray-500">
+                Click anywhere on the yellow circle to select a location.
+              </p>
+            )}
+          </div>
+
           <GoogleMap
             center={defaultCenter}
             mapContainerStyle={{ width: "100%", height: "100%" }}
             onClick={handleMapClick}
-            onLoad={setMap}
+            onLoad={(mapInstance) => {
+              setMap(mapInstance);
+              mapInstance.setOptions({
+                fullscreenControlOptions: {
+                  position: google.maps.ControlPosition.LEFT_BOTTOM,
+                },
+              });
+            }}
             onUnmount={() => setMap(null)}
             zoom={13}
           >
