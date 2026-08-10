@@ -16,6 +16,10 @@ import pandas as pd
 FEATURE_RADIUS_M = 500.0
 EARTH_RADIUS_M = 6_371_000.0
 NEIGHBOR_COUNT = 8
+MAX_MAP_POINTS = 600
+MAX_POPULATION_MAP_POINTS = 200
+COMPETITOR_LIST_CAP = 20
+ACCESSIBILITY_POI_TYPES = {"bus_stop", "parking_space"}
 
 BASE_DIRECTORY = Path(__file__).resolve().parent
 FEATURE_DATASET_PATH = (
@@ -155,10 +159,66 @@ def _quantity(count: int, plural_label: str) -> str:
     return f"1 {singular_label}"
 
 
-def collect_location_evidence(
+def _map_points(
+    samples: pd.DataFrame,
+    category_column: str | None = None,
+    category_value: str | None = None,
+    cap: int = MAX_MAP_POINTS,
+) -> list[Dict[str, FeatureValue]]:
+    """Convert a coordinate dataframe into capped, JSON-ready map points."""
+    if len(samples) > cap:
+        samples = samples.sample(n=cap, random_state=42)
+
+    points: list[Dict[str, FeatureValue]] = []
+    for _, row in samples.iterrows():
+        point: Dict[str, FeatureValue] = {
+            "latitude": float(row["latitude"]),
+            "longitude": float(row["longitude"]),
+        }
+        if category_column is not None:
+            point["category"] = str(row[category_column])
+        elif category_value is not None:
+            point["category"] = category_value
+        points.append(point)
+    return points
+
+
+def _nearby_competitors(
+    nearby_restaurants: pd.DataFrame, restaurant_distances: np.ndarray
+) -> list[Dict[str, FeatureValue]]:
+    """Rank nearby restaurants by distance and return their public details."""
+    if nearby_restaurants.empty:
+        return []
+
+    ordered = nearby_restaurants.copy()
+    ordered["_distance_m"] = restaurant_distances
+    ordered = ordered.sort_values("_distance_m").head(COMPETITOR_LIST_CAP)
+
+    competitors: list[Dict[str, FeatureValue]] = []
+    for _, row in ordered.iterrows():
+        rating = row.get("restaurant_rating")
+        review_count = row.get("user_rating_count")
+        competitors.append({
+            "name": str(row.get("restaurant_name") or "Unnamed restaurant"),
+            "rating": float(rating) if pd.notna(rating) else None,
+            "review_count": int(review_count) if pd.notna(review_count) else None,
+            "distance_m": round(float(row["_distance_m"]), 1),
+            "latitude": float(row["latitude"]),
+            "longitude": float(row["longitude"]),
+        })
+    return competitors
+
+
+def collect_site_detail(
     latitude: float, longitude: float, search_area: str
-) -> Dict[str, str]:
-    """Describe the real local counts underlying each grouped model factor."""
+) -> Dict[str, object]:
+    """Describe the real local counts underlying each grouped model factor.
+
+    Returns both the prose ``evidence`` shown per SHAP factor (unchanged from
+    before) and the structured data needed by the frontend's Factor
+    Breakdown, Competition list, and Location Snapshot map layers -- all
+    derived from the same radius queries, computed once.
+    """
     area_pois = POI_DF[POI_DF["areas_found_in"].astype(str).str.contains(
         search_area, case=False, regex=False, na=False
     )]
@@ -205,7 +265,7 @@ def collect_location_evidence(
         f"; the nearest is about {nearest_restaurant} m away"
         if nearest_restaurant is not None else ""
     )
-    return {
+    evidence = {
         "Demand": (
             "Within 500 m, anchor destinations include "
             f"{_count_text(normalized_counts, anchor_labels)}. Daytime activity includes "
@@ -225,4 +285,48 @@ def collect_location_evidence(
             f"There are {_quantity(len(nearby_buildings), 'mapped buildings')} within 500 m, "
             "which the model uses as a proxy for surrounding population density."
         ),
+    }
+
+    raw_counts = {
+        "demand": {
+            key: normalized_counts[key]
+            for key in {*anchor_labels, *daytime_labels, *commercial_labels}
+        },
+        "accessibility": {
+            "bus_stop": normalized_counts["bus_stop"],
+            "parking_space": normalized_counts["parking_space"],
+            "intersection": len(nearby_intersections),
+        },
+        "competition": {
+            "competitor_count": len(nearby_restaurants),
+            "nearest_restaurant_m": nearest_restaurant,
+        },
+        "population": {
+            "building_count": len(nearby_buildings),
+        },
+    }
+
+    nearby_competitors = _nearby_competitors(nearby_restaurants, restaurant_distances)
+
+    demand_pois = nearby_pois[~nearby_pois["poi_type"].isin(ACCESSIBILITY_POI_TYPES)]
+    accessibility_pois = nearby_pois[nearby_pois["poi_type"].isin(ACCESSIBILITY_POI_TYPES)]
+    map_layers = {
+        "demand_points": _map_points(demand_pois, category_column="poi_type"),
+        "accessibility_points": (
+            _map_points(accessibility_pois, category_column="poi_type")
+            + _map_points(nearby_intersections, category_value="intersection")
+        ),
+        "competition_points": nearby_competitors,
+        # Rendered as discrete pins on the frontend (Google discontinued the
+        # Maps JS API's heatmap layer), so this stays well under
+        # MAX_MAP_POINTS -- building counts within radius can run into the
+        # thousands, which would be an unreadable cluster of individual pins.
+        "population_points": _map_points(nearby_buildings, cap=MAX_POPULATION_MAP_POINTS),
+    }
+
+    return {
+        "evidence": evidence,
+        "raw_counts": raw_counts,
+        "nearby_competitors": nearby_competitors,
+        "map_layers": map_layers,
     }
