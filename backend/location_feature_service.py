@@ -103,14 +103,20 @@ def calculate_distances_m(
     return EARTH_RADIUS_M * central_angle
 
 
+def get_area_samples(search_area: str) -> pd.DataFrame:
+    """All analyzed dataset rows for one study area (used for IDW, benchmark stats, and leads)."""
+    area_samples = FEATURE_DF[FEATURE_DF["search_area"] == search_area]
+    if area_samples.empty:
+        raise ValueError(f"No feature samples are available for {search_area}.")
+    return area_samples
+
+
 def collect_location_features(
     latitude: float, longitude: float, search_area: str
 ) -> Dict[str, FeatureValue]:
     """Estimate the model's four factors from nearby updated-dataset rows."""
 
-    area_samples = FEATURE_DF[FEATURE_DF["search_area"] == search_area]
-    if area_samples.empty:
-        raise ValueError(f"No feature samples are available for {search_area}.")
+    area_samples = get_area_samples(search_area)
 
     distances = calculate_distances_m(latitude, longitude, area_samples)
     neighbor_count = min(NEIGHBOR_COUNT, len(area_samples))
@@ -134,12 +140,190 @@ def collect_location_features(
     return result
 
 
+MEANINGFUL_LEAD_ABSOLUTE_GAP = 0.15
+MEANINGFUL_LEAD_RELATIVE_RATIO = 1.25
+NEAR_ZERO_CURRENT_VALUE = 0.02
+
+
+def compute_benchmark(
+    area_samples: pd.DataFrame, current_values: Dict[str, FeatureValue]
+) -> Dict[str, Dict[str, float]]:
+    """Per-factor mean/median/percentile within this location's own study area.
+
+    Percentile is computed directly on the stored (already cost-inverted for
+    Competition) factor columns, so "higher percentile" means "more favorable"
+    for all four factors uniformly -- no separate inversion handling needed here.
+    """
+    benchmark: Dict[str, Dict[str, float]] = {}
+    for column in FACTOR_COLUMNS:
+        series = area_samples[column]
+        value = float(current_values[column])
+        percentile = float((series < value).mean() * 100.0)
+        benchmark[column] = {
+            "mean": round(float(series.mean()), 4),
+            "median": round(float(series.median()), 4),
+            "percentile": round(percentile, 1),
+        }
+    return benchmark
+
+
+def find_improvement_lead(
+    area_samples: pd.DataFrame,
+    weakest_factor: str,
+    current_value: float,
+) -> Dict[str, FeatureValue] | None:
+    """Best same-area sample for the weakest factor, if meaningfully better.
+
+    Returns None (never a fabricated/marginal lead) unless the best nearby
+    sample clears an absolute or relative improvement bar.
+    """
+    if area_samples.empty:
+        return None
+
+    best_row = area_samples.loc[area_samples[weakest_factor].idxmax()]
+    best_value = float(best_row[weakest_factor])
+
+    absolute_gap = best_value - current_value
+    clears_absolute_bar = absolute_gap >= MEANINGFUL_LEAD_ABSOLUTE_GAP
+    clears_relative_bar = (
+        current_value >= NEAR_ZERO_CURRENT_VALUE
+        and best_value >= current_value * MEANINGFUL_LEAD_RELATIVE_RATIO
+    )
+    if not (clears_absolute_bar or clears_relative_bar):
+        return None
+
+    return {
+        "factor": weakest_factor,
+        "current_value": round(current_value, 4),
+        "best_nearby_value": round(best_value, 4),
+        "best_nearby_latitude": float(best_row["latitude"]),
+        "best_nearby_longitude": float(best_row["longitude"]),
+    }
+
+
 def _within_radius(
     latitude: float, longitude: float, samples: pd.DataFrame
 ) -> tuple[pd.DataFrame, np.ndarray]:
     distances = calculate_distances_m(latitude, longitude, samples)
     mask = distances <= FEATURE_RADIUS_M
     return samples.loc[mask], distances[mask]
+
+
+# Internal category key -> RESTAURANT_DF column already carrying that count near each existing
+# restaurant. "_intersection_count_500m" / "_building_count_500m" are not in final_dataset.csv and
+# are computed once below with the same helpers used for a live query.
+_DEMAND_TYPICAL_COLUMNS = {
+    "cinema": "cinema_count_500m",
+    "museum": "museum_count_500m",
+    "temple": "temple_count_500m",
+    "recreation": "recreation_count_500m",
+    "office": "office_count_500m",
+    "college": "college_count_500m",
+    "school": "school_count_500m",
+    "hospital": "hospital_count_500m",
+    "clinic": "clinic_count_500m",
+    "retail": "retail_count_500m",
+    "bank": "bank_count_500m",
+}
+_ACCESSIBILITY_TYPICAL_COLUMNS = {
+    "bus_stop": "bus_stop_count_500m",
+    "parking_space": "parking_space_count_500m",
+    "intersection": "_intersection_count_500m",
+}
+_COMPETITION_TYPICAL_COLUMN = "competitor_count_500m"
+_POPULATION_TYPICAL_COLUMN = "_building_count_500m"
+
+
+def _compute_typical_reference() -> pd.DataFrame:
+    """Augment a RESTAURANT_DF copy with intersection/building counts within 500 m of each
+    existing restaurant -- computed once at startup with the exact same helpers a live query
+    uses, so 'typical' values stay directly comparable to what collect_site_detail() reports.
+    "Typical" is deliberately anchored to existing restaurant locations (not an unbiased area
+    grid): it answers "is my site as good as where restaurants already succeed," and lets 12 of
+    14 categories reuse final_dataset.csv's already-precomputed columns instead of a full re-scan.
+    """
+    reference = RESTAURANT_DF.copy()
+    reference["_intersection_count_500m"] = 0
+    reference["_building_count_500m"] = 0
+
+    for area in reference["search_area"].unique():
+        area_mask = reference["search_area"] == area
+        area_intersections = INTERSECTION_DF[
+            INTERSECTION_DF["area"].astype(str).str.casefold() == str(area).casefold()
+        ]
+        buildings = BUILDING_DATA.get(area)
+
+        intersection_counts: list[int] = []
+        building_counts: list[int] = []
+        for _, row in reference.loc[area_mask].iterrows():
+            _, intersection_distances = _within_radius(
+                row["latitude"], row["longitude"], area_intersections
+            )
+            intersection_counts.append(int(intersection_distances.size))
+
+            if buildings is not None and not buildings.empty:
+                _, building_distances = _within_radius(row["latitude"], row["longitude"], buildings)
+                building_counts.append(int(building_distances.size))
+            else:
+                building_counts.append(0)
+
+        reference.loc[area_mask, "_intersection_count_500m"] = intersection_counts
+        reference.loc[area_mask, "_building_count_500m"] = building_counts
+
+    return reference
+
+
+TYPICAL_REFERENCE = _compute_typical_reference()
+
+
+def compute_typical_counts(search_area: str) -> Dict[str, Dict[str, float]]:
+    """Average per-category counts near existing restaurants in this area."""
+    area_rows = TYPICAL_REFERENCE[
+        TYPICAL_REFERENCE["search_area"].astype(str).str.casefold() == search_area.casefold()
+    ]
+    if area_rows.empty:
+        return {"demand": {}, "accessibility": {}, "competition": {}, "population": {}}
+
+    def _mean(column: str) -> float:
+        return round(float(area_rows[column].mean()), 1)
+
+    return {
+        "demand": {key: _mean(column) for key, column in _DEMAND_TYPICAL_COLUMNS.items()},
+        "accessibility": {key: _mean(column) for key, column in _ACCESSIBILITY_TYPICAL_COLUMNS.items()},
+        "competition": {"competitor_count": _mean(_COMPETITION_TYPICAL_COLUMN)},
+        "population": {"building_count": _mean(_POPULATION_TYPICAL_COLUMN)},
+    }
+
+
+DISTANCE_BUCKET_SIZE_M = 100.0
+DISTANCE_BUCKET_COUNT = 5
+
+
+def _competitor_distance_histogram(distances: np.ndarray) -> list[Dict[str, FeatureValue]]:
+    """Fixed 100 m buckets over the full 0-500 m radius, from the uncapped distance array --
+    computed before _nearby_competitors() truncates to its top-20-by-distance display list."""
+    buckets: list[Dict[str, FeatureValue]] = []
+    for index in range(DISTANCE_BUCKET_COUNT):
+        start = index * DISTANCE_BUCKET_SIZE_M
+        end = start + DISTANCE_BUCKET_SIZE_M
+        is_last_bucket = index == DISTANCE_BUCKET_COUNT - 1
+        in_bucket = (
+            (distances >= start) & (distances <= end)
+            if is_last_bucket
+            else (distances >= start) & (distances < end)
+        )
+        buckets.append({
+            "start_m": start,
+            "end_m": end,
+            "count": int(np.sum(in_bucket)),
+        })
+    return buckets
+
+
+def _readable_category(raw_type: object) -> str | None:
+    if not isinstance(raw_type, str) or not raw_type.strip():
+        return None
+    return raw_type.replace("_", " ").strip().capitalize()
 
 
 def _count_text(counts: dict[str, int], labels: dict[str, str]) -> str:
@@ -200,6 +384,7 @@ def _nearby_competitors(
         review_count = row.get("user_rating_count")
         competitors.append({
             "name": str(row.get("restaurant_name") or "Unnamed restaurant"),
+            "category": _readable_category(row.get("primary_type")),
             "rating": float(rating) if pd.notna(rating) else None,
             "review_count": int(review_count) if pd.notna(review_count) else None,
             "distance_m": round(float(row["_distance_m"]), 1),
@@ -307,6 +492,8 @@ def collect_site_detail(
     }
 
     nearby_competitors = _nearby_competitors(nearby_restaurants, restaurant_distances)
+    typical_counts = compute_typical_counts(search_area)
+    competitor_distance_histogram = _competitor_distance_histogram(restaurant_distances)
 
     demand_pois = nearby_pois[~nearby_pois["poi_type"].isin(ACCESSIBILITY_POI_TYPES)]
     accessibility_pois = nearby_pois[nearby_pois["poi_type"].isin(ACCESSIBILITY_POI_TYPES)]
@@ -327,6 +514,8 @@ def collect_site_detail(
     return {
         "evidence": evidence,
         "raw_counts": raw_counts,
+        "typical_counts": typical_counts,
         "nearby_competitors": nearby_competitors,
+        "competitor_distance_histogram": competitor_distance_histogram,
         "map_layers": map_layers,
     }

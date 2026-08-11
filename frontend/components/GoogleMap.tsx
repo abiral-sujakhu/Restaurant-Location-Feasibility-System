@@ -1,9 +1,8 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { CircleF, GoogleMap, LoadScript, Marker, MarkerF } from "@react-google-maps/api";
+import { CircleF, GoogleMap, GoogleMarkerClusterer, LoadScript, Marker, MarkerF } from "@react-google-maps/api";
 import {
-  COMPARISON_FACTORS,
   type MapLayerId,
   type PanelId,
   type PredictionResponse,
@@ -11,7 +10,6 @@ import {
   type StudyArea,
   type StudyAreasResponse,
 } from "@/components/types";
-import { downloadPdfReport } from "@/lib/reportGeneration";
 import { bearingDegrees, distanceInMeters, offsetLatLng } from "@/lib/utils";
 import DashboardPanel from "@/components/panels/DashboardPanel";
 import FactorBreakdownPanel from "@/components/panels/FactorBreakdownPanel";
@@ -30,6 +28,25 @@ const apiBaseUrl =
 const FEATURE_RADIUS_M = 500;
 const DEFAULT_SUPPORTED_RADIUS_M = 1500;
 const HISTORY_KEY = "yogya-site-prediction-history";
+
+// Two saves within this distance count as "the same site" -- catches both an exact re-click and
+// a slightly-off re-click near a spot the user already saved.
+const DUPLICATE_LOCATION_RADIUS_M = 15;
+
+/** Keeps the first (most recent, since history is stored newest-first) entry per location
+ *  cluster. Used both when saving (reject/replace instead of appending a duplicate) and when
+ *  loading from localStorage (clean up whatever duplicates already accumulated there before
+ *  this fix existed). */
+function dedupeHistoryByLocation(entries: SavedPrediction[]): SavedPrediction[] {
+  const kept: SavedPrediction[] = [];
+  entries.forEach((entry) => {
+    const isDuplicate = kept.some(
+      (existing) => distanceInMeters(existing.position, entry.position) < DUPLICATE_LOCATION_RADIUS_M,
+    );
+    if (!isDuplicate) kept.push(entry);
+  });
+  return kept;
+}
 
 // Sub-zones within a selected area's boundary circle -- purely computed
 // offsets from the area center, not tied to any named locality data. Lets
@@ -114,6 +131,46 @@ const COMPETITION_MARKER_ICON = {
   strokeColor: "#ffffff",
 };
 
+// Above this many points, individual pins become unreadable clutter -- cluster instead. No
+// heatmap layer is used (see the comment above DEMAND_MARKER_ICON) but @react-google-maps/api
+// already re-exports GoogleMarkerClusterer (wrapping @googlemaps/markerclusterer, already a
+// transitive dependency -- no new package needed) for exactly this case.
+const CLUSTER_THRESHOLD = 100;
+
+type LatLngPoint = { latitude: number; longitude: number };
+
+function LayerMarkers<T extends LatLngPoint>({
+  points,
+  icon,
+  getTitle,
+  layerId,
+}: {
+  points: T[];
+  icon: google.maps.Symbol;
+  getTitle: (point: T) => string;
+  layerId: string;
+}) {
+  const renderMarker = (point: T, index: number, clusterer?: unknown) => (
+    <MarkerF
+      clusterer={clusterer as never}
+      icon={icon}
+      key={`${layerId}-${index}`}
+      position={{ lat: point.latitude, lng: point.longitude }}
+      title={getTitle(point)}
+    />
+  );
+
+  if (points.length <= CLUSTER_THRESHOLD) {
+    return <>{points.map((point, index) => renderMarker(point, index))}</>;
+  }
+
+  return (
+    <GoogleMarkerClusterer options={{}}>
+      {(clusterer) => <>{points.map((point, index) => renderMarker(point, index, clusterer))}</>}
+    </GoogleMarkerClusterer>
+  );
+}
+
 const NAV_ITEMS: Array<{ id: PanelId; label: string; icon: ReactNode }> = [
   {
     id: "dashboard",
@@ -189,14 +246,24 @@ export default function GoogleMapComponent() {
   const [areasError, setAreasError] = useState<string | null>(null);
   const [isNavExpanded, setIsNavExpanded] = useState(false);
   const [activePanel, setActivePanel] = useState<PanelId | null>(null);
+  const [isPredictionSaved, setIsPredictionSaved] = useState(false);
   const [activeMapLayer, setActiveMapLayer] = useState<MapLayerId | null>(null);
 
   useEffect(() => {
     try {
       const storedHistory = localStorage.getItem(HISTORY_KEY);
       // History is browser-only data and must be loaded after hydration.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (storedHistory) setHistory(JSON.parse(storedHistory));
+      if (storedHistory) {
+        const parsedHistory: SavedPrediction[] = JSON.parse(storedHistory);
+        const dedupedHistory = dedupeHistoryByLocation(parsedHistory);
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setHistory(dedupedHistory);
+        // Clean up whatever duplicates already accumulated in this browser before this fix
+        // existed, so they don't keep reappearing on every load.
+        if (dedupedHistory.length !== parsedHistory.length) {
+          localStorage.setItem(HISTORY_KEY, JSON.stringify(dedupedHistory));
+        }
+      }
     } catch {
       localStorage.removeItem(HISTORY_KEY);
     }
@@ -239,12 +306,21 @@ export default function GoogleMapComponent() {
     setMarkerPosition(selectedPosition);
     setPrediction(null);
     setActiveMapLayer(null);
+    setIsPredictionSaved(false);
     setError(null);
   };
 
   const handleMapClick = (event: google.maps.MapMouseEvent) => {
     if (!event.latLng) return;
     selectPosition({ lat: event.latLng.lat(), lng: event.latLng.lng() });
+  };
+
+  const navigateToLocation = (position: google.maps.LatLngLiteral) => {
+    selectPosition(position);
+    if (map) {
+      map.panTo(position);
+      map.setZoom(SUB_ZONE_ZOOM);
+    }
   };
 
   const focusStudyArea = (areaName: string) => {
@@ -303,6 +379,7 @@ export default function GoogleMapComponent() {
 
       setPrediction(data as PredictionResponse);
       setActivePanel("dashboard");
+      setIsPredictionSaved(false);
     } catch (requestError) {
       setError(
         requestError instanceof TypeError
@@ -347,14 +424,28 @@ export default function GoogleMapComponent() {
   const savePrediction = () => {
     if (!markerPosition || !prediction) return;
 
+    // Saving a site that's already saved (an exact or near-exact re-click) should refresh that
+    // entry in place, not create a second entry for the same physical location.
+    const existingIndex = history.findIndex(
+      (entry) => distanceInMeters(entry.position, markerPosition) < DUPLICATE_LOCATION_RADIUS_M,
+    );
+
     const entry: SavedPrediction = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      id: existingIndex >= 0 ? history[existingIndex].id : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
       name: `${prediction.area_information.search_area} site`,
       savedAt: new Date().toISOString(),
       position: markerPosition,
       prediction,
     };
-    updateHistory([entry, ...history]);
+
+    if (existingIndex >= 0) {
+      const nextHistory = [...history];
+      nextHistory[existingIndex] = entry;
+      updateHistory(nextHistory);
+    } else {
+      updateHistory([entry, ...history]);
+    }
+    setIsPredictionSaved(true);
   };
 
   const toggleComparison = (id: string) => {
@@ -365,36 +456,14 @@ export default function GoogleMapComponent() {
     });
   };
 
+  const removePrediction = (id: string) => {
+    updateHistory(history.filter((entry) => entry.id !== id));
+    setCompareIds((current) => current.filter((entryId) => entryId !== id));
+  };
+
   const comparedPredictions = compareIds
     .map((id) => history.find((entry) => entry.id === id))
     .filter((entry): entry is SavedPrediction => Boolean(entry));
-
-  const factorValue = (entry: SavedPrediction, factor: string) => {
-    const value = entry.prediction.collected_features[factor];
-    return typeof value === "number" ? value : Number(value) || 0;
-  };
-
-  const comparisonInsights = comparedPredictions.length < 2
-    ? []
-    : COMPARISON_FACTORS.map((factor) => {
-        const ranked = [...comparedPredictions].sort(
-          (a, b) => factorValue(b, factor.key) - factorValue(a, factor.key),
-        );
-        const difference = factorValue(ranked[0], factor.key) - factorValue(ranked.at(-1)!, factor.key);
-        return {
-          factor: factor.label,
-          leader: ranked[0].name,
-          difference,
-        };
-      });
-
-  const comparisonStrength = (difference: number) => {
-    const indexPointDifference = difference * 100;
-    if (indexPointDifference < 2) return "is very similar in";
-    if (indexPointDifference < 5) return "is slightly stronger in";
-    if (indexPointDifference < 10) return "is moderately stronger in";
-    return "is notably stronger in";
-  };
 
   const isSidebarOpen = activePanel !== null;
   const mapLayers = prediction?.site_detail.map_layers;
@@ -413,7 +482,7 @@ export default function GoogleMapComponent() {
             }`}
           >
             {isNavExpanded && (
-              <span className="font-sans text-base font-extrabold tracking-tight text-gray-900">
+              <span className="pl-2 font-sans text-base font-extrabold tracking-tight text-gray-900">
                 YogyaSite
               </span>
             )}
@@ -474,9 +543,17 @@ export default function GoogleMapComponent() {
           </div>
         </nav>
 
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
         {isSidebarOpen && (
-        <aside className="w-full overflow-y-auto rounded-2xl bg-white p-7 text-black shadow-lg lg:w-1/4 lg:shrink-0">
-          {activePanel === "dashboard" && <DashboardPanel onSave={savePrediction} prediction={prediction} />}
+        <aside className="max-h-[45vh] w-full shrink-0 overflow-y-auto rounded-2xl bg-white p-7 text-black shadow-lg lg:max-h-none lg:w-1/3">
+          {activePanel === "dashboard" && (
+            <DashboardPanel
+              isSaved={isPredictionSaved}
+              onNavigateToSuggestion={navigateToLocation}
+              onSave={savePrediction}
+              prediction={prediction}
+            />
+          )}
           {activePanel === "factors" && <FactorBreakdownPanel prediction={prediction} />}
           {activePanel === "snapshot" && (
             <LocationSnapshotPanel
@@ -489,11 +566,9 @@ export default function GoogleMapComponent() {
             <ComparisonPanel
               compareIds={compareIds}
               comparedPredictions={comparedPredictions}
-              comparisonInsights={comparisonInsights}
-              comparisonStrength={comparisonStrength}
-              factorValue={factorValue}
               history={history}
               onClearComparison={() => setCompareIds([])}
+              onRemove={removePrediction}
               onToggleComparison={toggleComparison}
             />
           )}
@@ -502,7 +577,7 @@ export default function GoogleMapComponent() {
         )}
 
         <div className="relative min-h-80 flex-1 overflow-hidden rounded-2xl shadow-lg">
-          <div className="absolute top-4 right-4 z-10 w-[360px] rounded-2xl bg-white p-4 text-black shadow-lg">
+          <div className="absolute top-4 right-4 z-10 max-h-[calc(100%-2rem)] w-[78%] overflow-y-auto rounded-2xl bg-white p-4 text-black shadow-lg sm:w-90">
             <h2 className="mb-4 text-lg font-semibold text-[#0b1e2b]">Choose Location</h2>
 
             <label className="mb-4 block">
@@ -600,10 +675,10 @@ export default function GoogleMapComponent() {
                 {prediction && (
                   <button
                     className="mt-2 w-full rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-                    onClick={() => downloadPdfReport(prediction)}
+                    onClick={() => setActivePanel("report")}
                     type="button"
                   >
-                    Download PDF report
+                    View full report
                   </button>
                 )}
               </>
@@ -660,43 +735,40 @@ export default function GoogleMapComponent() {
               </>
             )}
 
-            {mapLayers && activeMapLayer === "demand" &&
-              mapLayers.demand_points.map((point, index) => (
-                <MarkerF
-                  icon={{ ...DEMAND_MARKER_ICON, path: google.maps.SymbolPath.CIRCLE }}
-                  key={`demand-${index}`}
-                  position={{ lat: point.latitude, lng: point.longitude }}
-                  title={point.category ?? "Demand feature"}
-                />
-              ))}
-            {mapLayers && activeMapLayer === "population" &&
-              mapLayers.population_points.map((point, index) => (
-                <MarkerF
-                  icon={{ ...POPULATION_MARKER_ICON, path: google.maps.SymbolPath.CIRCLE }}
-                  key={`population-${index}`}
-                  position={{ lat: point.latitude, lng: point.longitude }}
-                  title="Mapped building"
-                />
-              ))}
-            {mapLayers && activeMapLayer === "accessibility" &&
-              mapLayers.accessibility_points.map((point, index) => (
-                <MarkerF
-                  icon={{ ...ACCESSIBILITY_MARKER_ICON, path: google.maps.SymbolPath.CIRCLE }}
-                  key={`accessibility-${index}`}
-                  position={{ lat: point.latitude, lng: point.longitude }}
-                  title={point.category ?? "Accessibility feature"}
-                />
-              ))}
-            {mapLayers && activeMapLayer === "competition" &&
-              mapLayers.competition_points.map((point, index) => (
-                <MarkerF
-                  icon={{ ...COMPETITION_MARKER_ICON, path: google.maps.SymbolPath.CIRCLE }}
-                  key={`competition-${index}`}
-                  position={{ lat: point.latitude, lng: point.longitude }}
-                  title={point.name}
-                />
-              ))}
+            {mapLayers && activeMapLayer === "demand" && (
+              <LayerMarkers
+                getTitle={(point) => point.category ?? "Demand feature"}
+                icon={{ ...DEMAND_MARKER_ICON, path: google.maps.SymbolPath.CIRCLE }}
+                layerId="demand"
+                points={mapLayers.demand_points}
+              />
+            )}
+            {mapLayers && activeMapLayer === "population" && (
+              <LayerMarkers
+                getTitle={() => "Mapped building"}
+                icon={{ ...POPULATION_MARKER_ICON, path: google.maps.SymbolPath.CIRCLE }}
+                layerId="population"
+                points={mapLayers.population_points}
+              />
+            )}
+            {mapLayers && activeMapLayer === "accessibility" && (
+              <LayerMarkers
+                getTitle={(point) => point.category ?? "Accessibility feature"}
+                icon={{ ...ACCESSIBILITY_MARKER_ICON, path: google.maps.SymbolPath.CIRCLE }}
+                layerId="accessibility"
+                points={mapLayers.accessibility_points}
+              />
+            )}
+            {mapLayers && activeMapLayer === "competition" && (
+              <LayerMarkers
+                getTitle={(point) => point.name}
+                icon={{ ...COMPETITION_MARKER_ICON, path: google.maps.SymbolPath.CIRCLE }}
+                layerId="competition"
+                points={mapLayers.competition_points}
+              />
+            )}
           </GoogleMap>
+        </div>
         </div>
       </div>
     </LoadScript>

@@ -45,6 +45,22 @@ export function bearingDegrees(
   return (toDegrees(Math.atan2(y, x)) + 360) % 360;
 }
 
+const COMPASS_POINTS = [
+  "north",
+  "northeast",
+  "east",
+  "southeast",
+  "south",
+  "southwest",
+  "west",
+  "northwest",
+];
+
+export function compassLabel(bearingDeg: number): string {
+  const index = Math.round(bearingDeg / 45) % COMPASS_POINTS.length;
+  return COMPASS_POINTS[index];
+}
+
 export function readableFeatureName(name: string) {
   return name.replaceAll("_", " ");
 }

@@ -45,11 +45,53 @@ export type RawCounts = {
 
 export type CompetitorInfo = {
   name: string;
+  category: string | null;
   rating: number | null;
   review_count: number | null;
   distance_m: number;
   latitude: number;
   longitude: number;
+};
+
+export type TypicalDemandCounts = {
+  cinema: number;
+  museum: number;
+  temple: number;
+  recreation: number;
+  office: number;
+  college: number;
+  school: number;
+  hospital: number;
+  clinic: number;
+  retail: number;
+  bank: number;
+};
+
+export type TypicalAccessibilityCounts = {
+  bus_stop: number;
+  parking_space: number;
+  intersection: number;
+};
+
+export type TypicalCompetitionCounts = {
+  competitor_count: number;
+};
+
+export type TypicalPopulationCounts = {
+  building_count: number;
+};
+
+export type TypicalCounts = {
+  demand: TypicalDemandCounts;
+  accessibility: TypicalAccessibilityCounts;
+  competition: TypicalCompetitionCounts;
+  population: TypicalPopulationCounts;
+};
+
+export type DistanceBucket = {
+  start_m: number;
+  end_m: number;
+  count: number;
 };
 
 export type MapPoint = {
@@ -67,8 +109,24 @@ export type MapLayers = {
 
 export type SiteDetail = {
   raw_counts: RawCounts;
+  typical_counts: TypicalCounts;
   nearby_competitors: CompetitorInfo[];
+  competitor_distance_histogram: DistanceBucket[];
   map_layers: MapLayers;
+};
+
+export type FactorBenchmark = {
+  mean: number;
+  median: number;
+  percentile: number;
+};
+
+export type ImprovementLead = {
+  factor: string;
+  current_value: number;
+  best_nearby_value: number;
+  best_nearby_latitude: number;
+  best_nearby_longitude: number;
 };
 
 export type PredictionResponse = {
@@ -90,6 +148,8 @@ export type PredictionResponse = {
   };
   collected_features: Record<string, number | string>;
   site_detail: SiteDetail;
+  benchmark: Record<FactorKey, FactorBenchmark>;
+  improvement_lead: ImprovementLead | null;
 };
 
 export type SavedPrediction = {
