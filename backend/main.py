@@ -15,8 +15,11 @@ from area_service import (
 from location_feature_service import (
     FEATURE_DF,
     FEATURE_RADIUS_M,
-    collect_location_evidence,
-    collect_location_features
+    collect_location_features,
+    collect_site_detail,
+    compute_benchmark,
+    find_improvement_lead,
+    get_area_samples
 )
 
 from prediction_service import (
@@ -136,7 +139,7 @@ def predict_selected_location(
             search_area=search_area
         )
 
-        location_evidence = collect_location_evidence(
+        site_detail = collect_site_detail(
             latitude=request.latitude,
             longitude=request.longitude,
             search_area=search_area
@@ -145,7 +148,22 @@ def predict_selected_location(
         # Step 3: Predict using the saved ML pipeline.
         prediction = predict_feasibility(
             location_features,
-            location_evidence
+            site_detail["evidence"]
+        )
+
+        # Step 4: Benchmark this location's factors against other analyzed
+        # points in the same study area (presentation/derived-stats only --
+        # does not touch scoring or classification).
+        area_samples = get_area_samples(search_area)
+        benchmark = compute_benchmark(area_samples, location_features)
+
+        weakest_factor = min(
+            benchmark, key=lambda column: benchmark[column]["percentile"]
+        )
+        improvement_lead = find_improvement_lead(
+            area_samples,
+            weakest_factor,
+            float(location_features[weakest_factor])
         )
 
         return {
@@ -182,7 +200,18 @@ def predict_selected_location(
                 "explanation"
             ],
 
-            "collected_features": location_features
+            "collected_features": location_features,
+
+            "site_detail": {
+                "raw_counts": site_detail["raw_counts"],
+                "typical_counts": site_detail["typical_counts"],
+                "nearby_competitors": site_detail["nearby_competitors"],
+                "competitor_distance_histogram": site_detail["competitor_distance_histogram"],
+                "map_layers": site_detail["map_layers"]
+            },
+
+            "benchmark": benchmark,
+            "improvement_lead": improvement_lead
         }
 
     except ValueError as error:
