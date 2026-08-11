@@ -10,7 +10,7 @@ import {
   type StudyArea,
   type StudyAreasResponse,
 } from "@/components/types";
-import { bearingDegrees, distanceInMeters, offsetLatLng } from "@/lib/utils";
+import { bearingDegrees, compassLabel, distanceInMeters, offsetLatLng } from "@/lib/utils";
 import DashboardPanel from "@/components/panels/DashboardPanel";
 import FactorBreakdownPanel from "@/components/panels/FactorBreakdownPanel";
 import LocationSnapshotPanel from "@/components/panels/LocationSnapshotPanel";
@@ -430,9 +430,19 @@ export default function GoogleMapComponent() {
       (entry) => distanceInMeters(entry.position, markerPosition) < DUPLICATE_LOCATION_RADIUS_M,
     );
 
+    // Two different saved points can land in the same named study area (e.g. two distinct
+    // Baneshwor sites), so a bare "Baneshwor site" name can't tell them apart in the comparison
+    // list. Suffix with direction + distance from the area center to keep names unique.
+    const areaCenter = studyAreas.find((candidate) => candidate.name === prediction.area_information.search_area);
+    const locationSuffix = areaCenter
+      ? ` · ${Math.round(prediction.area_information.distance_from_area_center_m)} m ${compassLabel(
+          bearingDegrees({ lat: areaCenter.latitude, lng: areaCenter.longitude }, markerPosition),
+        )} of center`
+      : "";
+
     const entry: SavedPrediction = {
       id: existingIndex >= 0 ? history[existingIndex].id : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      name: `${prediction.area_information.search_area} site`,
+      name: `${prediction.area_information.search_area} site${locationSuffix}`,
       savedAt: new Date().toISOString(),
       position: markerPosition,
       prediction,
@@ -459,6 +469,10 @@ export default function GoogleMapComponent() {
   const removePrediction = (id: string) => {
     updateHistory(history.filter((entry) => entry.id !== id));
     setCompareIds((current) => current.filter((entryId) => entryId !== id));
+  };
+
+  const renamePrediction = (id: string, name: string) => {
+    updateHistory(history.map((entry) => (entry.id === id ? { ...entry, name } : entry)));
   };
 
   const comparedPredictions = compareIds
@@ -569,6 +583,8 @@ export default function GoogleMapComponent() {
               history={history}
               onClearComparison={() => setCompareIds([])}
               onRemove={removePrediction}
+              onRename={renamePrediction}
+              onRevisit={navigateToLocation}
               onToggleComparison={toggleComparison}
             />
           )}

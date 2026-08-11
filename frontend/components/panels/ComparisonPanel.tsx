@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { COMPARISON_FACTORS, type SavedPrediction } from "@/components/types";
 import {
   factorComparisonSentence,
@@ -16,6 +17,8 @@ type ComparisonPanelProps = {
   onToggleComparison: (id: string) => void;
   onClearComparison: () => void;
   onRemove: (id: string) => void;
+  onRename: (id: string, name: string) => void;
+  onRevisit: (position: google.maps.LatLngLiteral) => void;
 };
 
 export default function ComparisonPanel({
@@ -25,9 +28,25 @@ export default function ComparisonPanel({
   onToggleComparison,
   onClearComparison,
   onRemove,
+  onRename,
+  onRevisit,
 }: ComparisonPanelProps) {
   const summary = comparedPredictions.length > 1 ? generateComparisonSummary(comparedPredictions) : null;
   const rawCountRows = comparedPredictions.length > 0 ? generateRawCountRows(comparedPredictions) : [];
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftName, setDraftName] = useState("");
+
+  const startRename = (entry: SavedPrediction) => {
+    setEditingId(entry.id);
+    setDraftName(entry.name);
+  };
+
+  const confirmRename = (id: string) => {
+    const trimmed = draftName.trim();
+    if (trimmed) onRename(id, trimmed);
+    setEditingId(null);
+  };
 
   return (
     <div>
@@ -44,6 +63,42 @@ export default function ComparisonPanel({
         <div className="mt-4 space-y-2">
           {history.map((entry) => {
             const isCompared = compareIds.includes(entry.id);
+            const isEditing = editingId === entry.id;
+
+            if (isEditing) {
+              return (
+                <div
+                  className="flex items-center gap-2 rounded-xl border border-blue-300 bg-blue-50 p-2.5 text-sm"
+                  key={entry.id}
+                >
+                  <input
+                    autoFocus
+                    className="min-w-0 flex-1 rounded-md border border-blue-300 bg-white px-2 py-1 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    onChange={(event) => setDraftName(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") confirmRename(entry.id);
+                      if (event.key === "Escape") setEditingId(null);
+                    }}
+                    value={draftName}
+                  />
+                  <button
+                    className="shrink-0 rounded-md px-2 py-1 text-xs font-semibold text-emerald-700 transition hover:bg-emerald-100"
+                    onClick={() => confirmRename(entry.id)}
+                    type="button"
+                  >
+                    Save
+                  </button>
+                  <button
+                    className="shrink-0 rounded-md px-2 py-1 text-xs font-semibold text-gray-500 transition hover:bg-gray-200"
+                    onClick={() => setEditingId(null)}
+                    type="button"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              );
+            }
+
             return (
               <div
                 className={`flex items-center justify-between gap-2 rounded-xl border p-2.5 text-sm transition ${
@@ -66,6 +121,28 @@ export default function ComparisonPanel({
                 >
                   {entry.prediction.predicted_label}
                 </span>
+                <button
+                  className="shrink-0 rounded-md px-2 py-1 text-xs font-semibold text-blue-600 transition hover:bg-blue-50"
+                  onClick={() => onRevisit(entry.position)}
+                  type="button"
+                >
+                  Revisit
+                </button>
+                <button
+                  aria-label={`Rename ${entry.name}`}
+                  className="shrink-0 rounded-md p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600"
+                  onClick={() => startRename(entry)}
+                  title="Rename"
+                  type="button"
+                >
+                  <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path
+                      d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </button>
                 <button
                   aria-label={`Delete ${entry.name}`}
                   className="shrink-0 rounded-md p-1.5 text-red-500 transition hover:bg-red-50 hover:text-red-700"

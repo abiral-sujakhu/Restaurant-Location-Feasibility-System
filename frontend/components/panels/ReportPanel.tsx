@@ -6,7 +6,6 @@ import DistanceHistogram from "@/components/charts/DistanceHistogram";
 import FactorBarChart, { type BarDatum } from "@/components/charts/FactorBarChart";
 import FactorGauge from "@/components/charts/FactorGauge";
 import {
-  confidenceBand,
   formatCategorySummary,
   generateDecisionHeadline,
   generateFactorHeadline,
@@ -507,19 +506,6 @@ export default function ReportPanel({ prediction }: ReportPanelProps) {
           <p className="text-[11px] leading-5 text-gray-400">
             SHAP values show how each factor moved the model toward or away from the predicted feasibility class, relative
             to the other factors for this specific prediction.
-          </p>
-        </div>
-        <div className="mt-4 border-t border-gray-200 pt-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">Class probabilities</p>
-          <ul className="mt-1.5 space-y-1 text-xs text-gray-500">
-            {Object.entries(prediction.probabilities).map(([label, probability]) => (
-              <li key={label}>
-                {label}: {(probability * 100).toFixed(1)}%
-              </li>
-            ))}
-          </ul>
-          <p className="mt-2 text-[11px] leading-5 text-gray-400">
-            Overall confidence band shown elsewhere in this report: {confidenceBand(prediction.confidence)}.
           </p>
         </div>
       </ReportSection>
