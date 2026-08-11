@@ -58,7 +58,7 @@ export default function LocationSnapshotPanel({
 }: LocationSnapshotPanelProps) {
   return (
     <div>
-      <h3 className="text-lg font-semibold">Location snapshot</h3>
+      <h3 className="text-4xl font-semibold text-gray-900">Location snapshot</h3>
       <p className="mt-1 text-sm text-gray-500">
         Toggle a layer to see it drawn directly on the map, without losing your spatial context.
       </p>
@@ -75,8 +75,11 @@ export default function LocationSnapshotPanel({
           const pointCount = prediction ? layerPointCount(prediction, option.id) : 0;
           return (
             <button
-              className={`w-full rounded-xl border p-3 text-left transition ${
-                isActive ? "border-blue-400 bg-blue-50" : "border-gray-200 bg-white hover:bg-gray-50"
+              aria-pressed={isActive}
+              className={`w-full rounded-xl border-2 p-3 text-left transition ${
+                isActive
+                  ? "border-blue-500 bg-blue-50 shadow-sm"
+                  : "border-gray-200 bg-white hover:bg-gray-50"
               } ${!prediction ? "cursor-not-allowed opacity-50" : ""}`}
               disabled={!prediction}
               key={option.id}
@@ -88,7 +91,21 @@ export default function LocationSnapshotPanel({
                   <span className={`h-2.5 w-2.5 rounded-full ${option.swatch}`} />
                   {option.label}
                 </span>
-                {prediction && <span className="text-xs text-gray-400">{pointCount} points</span>}
+                <span className="flex items-center gap-2">
+                  {prediction && <span className="text-xs text-gray-400">{pointCount} points</span>}
+                  {isActive && (
+                    <svg
+                      aria-hidden="true"
+                      className="h-4 w-4 text-blue-600"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={2.5}
+                      viewBox="0 0 24 24"
+                    >
+                      <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  )}
+                </span>
               </div>
               <p className="mt-1 text-xs leading-5 text-gray-500">{option.description}</p>
             </button>

@@ -1,37 +1,37 @@
 "use client";
 
 import { COMPARISON_FACTORS, type SavedPrediction } from "@/components/types";
-
-type ComparisonInsight = {
-  factor: string;
-  leader: string;
-  difference: number;
-};
+import {
+  factorComparisonSentence,
+  factorValue,
+  generateComparisonSummary,
+  generateRawCountRows,
+} from "@/lib/insights";
+import { resultBadgeClasses } from "@/lib/utils";
 
 type ComparisonPanelProps = {
   history: SavedPrediction[];
   compareIds: string[];
   comparedPredictions: SavedPrediction[];
-  comparisonInsights: ComparisonInsight[];
-  comparisonStrength: (difference: number) => string;
-  factorValue: (entry: SavedPrediction, factor: string) => number;
   onToggleComparison: (id: string) => void;
   onClearComparison: () => void;
+  onRemove: (id: string) => void;
 };
 
 export default function ComparisonPanel({
   history,
   compareIds,
   comparedPredictions,
-  comparisonInsights,
-  comparisonStrength,
-  factorValue,
   onToggleComparison,
   onClearComparison,
+  onRemove,
 }: ComparisonPanelProps) {
+  const summary = comparedPredictions.length > 1 ? generateComparisonSummary(comparedPredictions) : null;
+  const rawCountRows = comparedPredictions.length > 0 ? generateRawCountRows(comparedPredictions) : [];
+
   return (
     <div>
-      <h3 className="text-lg font-semibold">Comparison</h3>
+      <h3 className="text-4xl font-semibold text-gray-900">Comparison</h3>
       <p className="mt-1 text-sm text-gray-500">
         Select 2–3 saved locations to compare their site-condition scores side by side.
       </p>
@@ -45,13 +45,13 @@ export default function ComparisonPanel({
           {history.map((entry) => {
             const isCompared = compareIds.includes(entry.id);
             return (
-              <label
-                className={`flex cursor-pointer items-center justify-between gap-2 rounded-xl border p-2.5 text-sm transition ${
+              <div
+                className={`flex items-center justify-between gap-2 rounded-xl border p-2.5 text-sm transition ${
                   isCompared ? "border-blue-400 bg-blue-50" : "border-gray-200 bg-white hover:bg-gray-50"
                 }`}
                 key={entry.id}
               >
-                <span className="flex min-w-0 items-center gap-2">
+                <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
                   <input
                     checked={isCompared}
                     className="h-4 w-4 shrink-0 accent-blue-600"
@@ -60,25 +60,49 @@ export default function ComparisonPanel({
                     type="checkbox"
                   />
                   <span className="truncate font-medium text-gray-800">{entry.name}</span>
-                </span>
-                <span className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-semibold text-gray-600">
+                </label>
+                <span
+                  className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${resultBadgeClasses(entry.prediction.predicted_label)}`}
+                >
                   {entry.prediction.predicted_label}
                 </span>
-              </label>
+                <button
+                  aria-label={`Delete ${entry.name}`}
+                  className="shrink-0 rounded-md p-1.5 text-red-500 transition hover:bg-red-50 hover:text-red-700"
+                  onClick={() => onRemove(entry.id)}
+                  title="Delete"
+                  type="button"
+                >
+                  <svg aria-hidden="true" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path d="M5 7h14" strokeLinecap="round" />
+                    <path d="M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M7 7l1 13a1 1 0 001 1h6a1 1 0 001-1l1-13" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+              </div>
             );
           })}
         </div>
       )}
 
       {comparedPredictions.length > 0 && (
-        <div className="mt-5 rounded-xl bg-slate-900 p-4 text-white">
-          <div className="flex items-center justify-between">
-            <h4 className="font-semibold">Site comparison</h4>
-            <button className="text-xs text-slate-300 hover:text-white" onClick={onClearComparison} type="button">
+        <div className="mt-5 rounded-2xl border border-gray-100 bg-gray-50 p-4">
+          <div className="flex items-center justify-between gap-2">
+            <h4 className="text-sm font-semibold text-gray-900">Site comparison</h4>
+            <button
+              className="shrink-0 text-xs font-semibold text-gray-500 hover:text-gray-700"
+              onClick={onClearComparison}
+              type="button"
+            >
               Clear
             </button>
           </div>
-          <p className="mt-1 text-xs text-slate-400">
+
+          {summary && (
+            <p className="mt-3 rounded-lg bg-blue-50 p-2.5 text-xs leading-5 text-blue-900">{summary}</p>
+          )}
+
+          <p className="mt-3 text-xs leading-5 text-gray-400">
             Site-condition indices use a 0–100 scale. Higher is more favorable; these are not probabilities.
           </p>
 
@@ -87,9 +111,15 @@ export default function ComparisonPanel({
               const highestValue = Math.max(
                 ...comparedPredictions.map((entry) => factorValue(entry, factor.key)),
               );
+              const ranked = [...comparedPredictions].sort(
+                (a, b) => factorValue(b, factor.key) - factorValue(a, factor.key),
+              );
+              const pointDifference =
+                (factorValue(ranked[0], factor.key) - factorValue(ranked.at(-1)!, factor.key)) * 100;
+
               return (
                 <div key={factor.key}>
-                  <h5 className="text-xs font-semibold uppercase tracking-wide text-slate-300">{factor.label}</h5>
+                  <h5 className="text-xs font-semibold uppercase tracking-wide text-gray-500">{factor.label}</h5>
                   <div className="mt-2 space-y-2">
                     {comparedPredictions.map((entry) => {
                       const value = factorValue(entry, factor.key);
@@ -97,17 +127,16 @@ export default function ComparisonPanel({
                       return (
                         <div key={entry.id}>
                           <div className="flex justify-between gap-3 text-xs">
-                            <span className={isLeader ? "font-semibold text-white" : "truncate text-slate-300"}>
+                            <span className={isLeader ? "font-semibold text-gray-900" : "truncate text-gray-500"}>
                               {entry.name}
-                              {isLeader && comparedPredictions.length > 1 ? " · best" : ""}
                             </span>
-                            <span className={isLeader ? "font-bold text-emerald-300" : "text-slate-300"}>
-                              {(value * 100).toFixed(1)} / 100
+                            <span className={isLeader ? "font-bold text-emerald-600" : "text-gray-500"}>
+                              {(value * 100).toFixed(0)} / 100
                             </span>
                           </div>
-                          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-700">
+                          <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-200">
                             <div
-                              className={isLeader ? "h-full rounded-full bg-emerald-400" : "h-full rounded-full bg-blue-400"}
+                              className={isLeader ? "h-full rounded-full bg-emerald-500" : "h-full rounded-full bg-blue-400"}
                               style={{ width: `${Math.max(3, Math.min(100, value * 100))}%` }}
                             />
                           </div>
@@ -115,31 +144,55 @@ export default function ComparisonPanel({
                       );
                     })}
                   </div>
+                  {comparedPredictions.length > 1 && (
+                    <p className="mt-2 text-xs leading-5 text-gray-500">
+                      {factorComparisonSentence(factor.key, ranked[0].name, pointDifference)}
+                    </p>
+                  )}
                 </div>
               );
             })}
           </div>
 
-          <div className="mt-5 border-t border-slate-700 pt-4">
-            <h5 className="text-sm font-semibold">Comparison insights</h5>
-            {comparisonInsights.length < 1 ? (
-              <p className="mt-2 text-xs leading-5 text-slate-300">
-                Add at least one more site to generate comparative insights.
+          {rawCountRows.length > 0 && (
+            <div className="mt-5 border-t border-gray-200 pt-4">
+              <h5 className="text-sm font-semibold text-gray-900">Raw counts</h5>
+              <p className="mt-1 text-xs text-gray-500">
+                The underlying numbers behind each score, side by side.
               </p>
-            ) : (
-              <ul className="mt-2 space-y-2 text-xs leading-5 text-slate-300">
-                {comparisonInsights.map((insight) => (
-                  <li key={insight.factor}>
-                    <span className="font-semibold text-white">{insight.leader}</span>{" "}
-                    {comparisonStrength(insight.difference)} {insight.factor.toLowerCase()}
-                    {insight.difference > 0
-                      ? ` (+${(insight.difference * 100).toFixed(1)} index points).`
-                      : "; the sites have the same index."}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full min-w-[280px] text-xs">
+                  <thead>
+                    <tr className="border-b border-gray-200 text-gray-400">
+                      <th className="py-1.5 pr-2 text-left font-medium">Count</th>
+                      {comparedPredictions.map((entry) => (
+                        <th className="px-2 py-1.5 text-right font-medium" key={entry.id}>
+                          <span className="block max-w-[100px] truncate" title={entry.name}>
+                            {entry.name}
+                          </span>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rawCountRows.map((row) => (
+                      <tr className="border-b border-gray-100 last:border-0" key={row.label}>
+                        <td className="py-1.5 pr-2 text-gray-600">{row.label}</td>
+                        {row.values.map((value, index) => (
+                          <td
+                            className="px-2 py-1.5 text-right font-semibold text-gray-900"
+                            key={comparedPredictions[index].id}
+                          >
+                            {value}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
