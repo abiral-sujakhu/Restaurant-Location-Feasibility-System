@@ -4,7 +4,6 @@ import { useState } from "react";
 import { type FactorKey, COMPARISON_FACTORS, type PredictionResponse } from "@/components/types";
 import FactorGauge from "@/components/charts/FactorGauge";
 import {
-  confidenceBand,
   generateFactorHeadline,
   generateRecommendation,
   isPrimaryDriver,
@@ -124,12 +123,7 @@ export default function DashboardPanel({ prediction, isSaved, onSave, onNavigate
       </p>
 
       <div className="mt-4 rounded-2xl border border-gray-100 bg-gray-50 p-4">
-        <div className="flex items-center justify-between gap-2">
-          <p className={`text-base font-normal ${accent.text}`}>{prediction.predicted_label} feasibility</p>
-          <span className="shrink-0 text-xs font-semibold text-gray-400">
-            {confidenceBand(prediction.confidence)} confidence
-          </span>
-        </div>
+        <p className={`text-base font-normal ${accent.text}`}>{prediction.predicted_label} feasibility</p>
         {topFactorHeadline && (
           <p className="mt-1 text-xs leading-5 text-gray-500">{topFactorHeadline}</p>
         )}
