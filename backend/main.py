@@ -132,7 +132,8 @@ def predict_selected_location(
             area_information["search_area"]
         )
 
-        # Step 2: Calculate all 500 m features from CSV data.
+        # Step 2: Calculate this coordinate's grouped model factors directly
+        # from its 500 m source-data queries and frozen training transforms.
         location_features = collect_location_features(
             latitude=request.latitude,
             longitude=request.longitude,

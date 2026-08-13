@@ -1,46 +1,92 @@
 """Build model-ready grouped features for a selected map coordinate.
 
-The current model was trained on ``dataset_final_entropy.csv``.  A map click
-does not have an exact row in that dataset, so its four factors are estimated
-from the nearest samples in the same study area using inverse-distance
-weighting.  Exact dataset coordinates retain their stored feature values.
+For every map click, the raw neighborhood criteria are calculated directly
+from the same 500 m source-data queries used to prepare candidate/background
+training locations.  Those raw values are then transformed into Demand,
+Accessibility, Competition, and Population with the frozen candidate-location
+normalization ranges from training.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Union
 
 import numpy as np
 import pandas as pd
+from pyproj import Transformer
+from scipy.spatial import cKDTree
+from shapely import wkt
+from shapely.geometry import LineString, Point
+from shapely.strtree import STRtree
 
 
 FEATURE_RADIUS_M = 500.0
-EARTH_RADIUS_M = 6_371_000.0
-NEIGHBOR_COUNT = 8
 MAX_MAP_POINTS = 600
 MAX_POPULATION_MAP_POINTS = 200
 COMPETITOR_LIST_CAP = 20
 ACCESSIBILITY_POI_TYPES = {"bus_stop", "parking_space"}
+MAIN_ROAD_TYPES = {"primary", "trunk", "secondary"}
 
 BASE_DIRECTORY = Path(__file__).resolve().parent
 FEATURE_DATASET_PATH = (
     BASE_DIRECTORY.parent / "data" / "processed" / "dataset_final_entropy.csv"
+)
+BACKGROUND_REFERENCE_PATH = (
+    BASE_DIRECTORY.parent / "data" / "processed" / "background_points.csv"
+)
+BUILDING_COMBINED_PATH = (
+    BASE_DIRECTORY.parent / "data" / "processed" / "buildings_combined.csv"
+)
+ROAD_PATH = (
+    BASE_DIRECTORY.parent / "data" / "raw_data" / "roads" / "roads_all_areas.csv"
 )
 FACTOR_COLUMNS = ["Demand", "Accessibility", "Competition", "Population"]
 
 POI_PATH = BASE_DIRECTORY / "data" / "pois_unique.csv"
 INTERSECTION_PATH = BASE_DIRECTORY / "data" / "intersections_all_areas.csv"
 RESTAURANT_PATH = BASE_DIRECTORY / "data" / "final_dataset.csv"
-BUILDING_PATHS = {
-    "Baneshwor": BASE_DIRECTORY / "data" / "buildings_baneshwor.csv",
-    "New Road": BASE_DIRECTORY / "data" / "buildings_new_road.csv",
-    "Koteshwor": BASE_DIRECTORY / "data" / "buildings_koteshwor.csv",
-    "Bhaktapur durbar square": BASE_DIRECTORY / "data" / "buildings_bhaktapur durbar square.csv",
-    "Patan durbar square": BASE_DIRECTORY / "data" / "buildings_patan.csv",
-    "Boudha stupa": BASE_DIRECTORY / "data" / "buildings_bouddha.csv",
-    "Pulchowk": BASE_DIRECTORY / "data" / "buildings_pulchowk.csv",
-    "Durbar Marg": BASE_DIRECTORY / "data" / "buildings_durbarmarg.csv",
-    "Kirtipur": BASE_DIRECTORY / "data" / "buildings_kirtipur.csv",
-}
+
+DEMAND_ANCHOR_COLUMNS = [
+    "cinema_count_500m",
+    "museum_count_500m",
+    "temple_count_500m",
+    "recreation_count_500m",
+]
+DEMAND_DAYTIME_COLUMNS = [
+    "office_count_500m",
+    "college_count_500m",
+    "school_count_500m",
+    "hospital_count_500m",
+    "clinic_count_500m",
+]
+DEMAND_COMMERCIAL_COLUMNS = [
+    "retail_count_500m",
+    "bank_count_500m",
+]
+ACCESSIBILITY_BENEFIT_COLUMNS = [
+    "bus_stop_count_500m",
+    "parking_space_count_500m",
+    "intersection_count_500m",
+]
+ACCESSIBILITY_COST_COLUMNS = ["dist_to_main_road_m"]
+COMPETITION_BENEFIT_COLUMNS = ["nearest_restaurant_m"]
+COMPETITION_COST_COLUMNS = [
+    "competitor_count_500m",
+    "avg_restaurant_rating_500m",
+    "avg_review_ratings_500m",
+]
+POPULATION_COLUMN = "building_count_500m"
+
+RAW_FACTOR_COLUMNS = [
+    *DEMAND_ANCHOR_COLUMNS,
+    *DEMAND_DAYTIME_COLUMNS,
+    *DEMAND_COMMERCIAL_COLUMNS,
+    *ACCESSIBILITY_BENEFIT_COLUMNS,
+    *ACCESSIBILITY_COST_COLUMNS,
+    *COMPETITION_BENEFIT_COLUMNS,
+    *COMPETITION_COST_COLUMNS,
+    POPULATION_COLUMN,
+]
 
 FeatureValue = Union[int, float, str]
 
@@ -69,75 +115,298 @@ FEATURE_DF = load_feature_dataset()
 
 
 def _load_coordinate_data(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        raise FileNotFoundError(f"Coordinate dataset not found: {path}")
     data = pd.read_csv(path)
     data["latitude"] = pd.to_numeric(data["latitude"], errors="coerce")
     data["longitude"] = pd.to_numeric(data["longitude"], errors="coerce")
     return data.dropna(subset=["latitude", "longitude"]).reset_index(drop=True)
 
 
-POI_DF = _load_coordinate_data(POI_PATH)
-INTERSECTION_DF = _load_coordinate_data(INTERSECTION_PATH)
+POI_DF = _load_coordinate_data(POI_PATH).drop_duplicates("place_id").reset_index(drop=True)
+INTERSECTION_DF = (
+    _load_coordinate_data(INTERSECTION_PATH)
+    .drop_duplicates(subset=["latitude", "longitude"])
+    .reset_index(drop=True)
+)
 RESTAURANT_DF = _load_coordinate_data(RESTAURANT_PATH)
-BUILDING_DATA = {
-    area: _load_coordinate_data(path) for area, path in BUILDING_PATHS.items()
-}
+BUILDING_DF = (
+    _load_coordinate_data(BUILDING_COMBINED_PATH)
+    .drop_duplicates(subset=["latitude", "longitude"])
+    .reset_index(drop=True)
+)
 
 
-def calculate_distances_m(
-    latitude: float, longitude: float, samples: pd.DataFrame
-) -> np.ndarray:
-    selected_latitude = np.radians(latitude)
-    selected_longitude = np.radians(longitude)
-    sample_latitudes = np.radians(samples["latitude"].to_numpy(dtype=float))
-    sample_longitudes = np.radians(samples["longitude"].to_numpy(dtype=float))
+def _load_normalization_bounds() -> Dict[str, tuple[float, float]]:
+    """Load the candidate-location min/max values used during model preparation."""
+    if not BACKGROUND_REFERENCE_PATH.exists():
+        raise FileNotFoundError(
+            f"Candidate normalization reference not found: {BACKGROUND_REFERENCE_PATH}"
+        )
 
-    latitude_difference = sample_latitudes - selected_latitude
-    longitude_difference = sample_longitudes - selected_longitude
-    haversine_value = (
-        np.sin(latitude_difference / 2.0) ** 2
-        + np.cos(selected_latitude)
-        * np.cos(sample_latitudes)
-        * np.sin(longitude_difference / 2.0) ** 2
+    reference = pd.read_csv(BACKGROUND_REFERENCE_PATH)
+    missing = set(RAW_FACTOR_COLUMNS) - set(reference.columns)
+    if missing:
+        raise ValueError(
+            "The candidate normalization reference is missing columns: "
+            + ", ".join(sorted(missing))
+        )
+
+    bounds: Dict[str, tuple[float, float]] = {}
+    for column in RAW_FACTOR_COLUMNS:
+        # The original candidate pipeline treated missing competition averages
+        # as zero before fitting its min/max transformation.
+        values = pd.to_numeric(reference[column], errors="coerce").fillna(0.0)
+        bounds[column] = (float(values.min()), float(values.max()))
+    return bounds
+
+
+NORMALIZATION_BOUNDS = _load_normalization_bounds()
+
+_TO_UTM = Transformer.from_crs("EPSG:4326", "EPSG:32645", always_xy=True)
+
+
+def _project_coordinates(data: pd.DataFrame) -> np.ndarray:
+    x, y = _TO_UTM.transform(
+        data["longitude"].to_numpy(dtype=float),
+        data["latitude"].to_numpy(dtype=float),
     )
-    central_angle = 2.0 * np.arcsin(np.sqrt(np.clip(haversine_value, 0.0, 1.0)))
-    return EARTH_RADIUS_M * central_angle
+    return np.column_stack((np.asarray(x, dtype=float), np.asarray(y, dtype=float)))
+
+
+POI_XY = _project_coordinates(POI_DF)
+INTERSECTION_XY = _project_coordinates(INTERSECTION_DF)
+RESTAURANT_XY = _project_coordinates(RESTAURANT_DF)
+BUILDING_XY = _project_coordinates(BUILDING_DF)
+
+POI_TREE = cKDTree(POI_XY)
+INTERSECTION_TREE = cKDTree(INTERSECTION_XY)
+RESTAURANT_TREE = cKDTree(RESTAURANT_XY)
+BUILDING_TREE = cKDTree(BUILDING_XY)
+
+
+def _load_main_roads() -> list[LineString]:
+    if not ROAD_PATH.exists():
+        raise FileNotFoundError(f"Road dataset not found: {ROAD_PATH}")
+
+    roads = pd.read_csv(ROAD_PATH)
+    required = {"highway", "geometry_wkt"}
+    missing = required - set(roads.columns)
+    if missing:
+        raise ValueError(
+            "The road dataset is missing columns: " + ", ".join(sorted(missing))
+        )
+
+    main_roads = roads[roads["highway"].isin(MAIN_ROAD_TYPES)]
+    projected_lines: list[LineString] = []
+    for geometry_text in main_roads["geometry_wkt"].dropna():
+        geometry = wkt.loads(geometry_text)
+        x, y = _TO_UTM.transform(*geometry.xy)
+        projected_lines.append(LineString(zip(x, y)))
+
+    if not projected_lines:
+        raise ValueError("No primary, trunk, or secondary roads are available.")
+    return projected_lines
+
+
+MAIN_ROAD_LINES = _load_main_roads()
+MAIN_ROAD_TREE = STRtree(MAIN_ROAD_LINES)
+
+
+@dataclass
+class LocationNeighborhood:
+    raw_features: Dict[str, float]
+    nearby_pois: pd.DataFrame
+    nearby_intersections: pd.DataFrame
+    nearby_restaurants: pd.DataFrame
+    restaurant_distances: np.ndarray
+    nearby_buildings: pd.DataFrame
+
+
+def _selected_point_xy(latitude: float, longitude: float) -> np.ndarray:
+    x, y = _TO_UTM.transform(longitude, latitude)
+    return np.asarray([float(x), float(y)], dtype=float)
+
+
+def _query_neighborhood(
+    tree: cKDTree,
+    coordinates: np.ndarray,
+    data: pd.DataFrame,
+    selected_xy: np.ndarray,
+) -> tuple[pd.DataFrame, np.ndarray]:
+    indices = np.asarray(
+        tree.query_ball_point(selected_xy, FEATURE_RADIUS_M),
+        dtype=int,
+    )
+    if not indices.size:
+        return data.iloc[0:0].copy(), np.asarray([], dtype=float)
+
+    distances = np.linalg.norm(coordinates[indices] - selected_xy, axis=1)
+    return data.iloc[indices].copy(), distances
+
+
+def _nearest_main_road_distance_m(selected_xy: np.ndarray) -> float:
+    point = Point(float(selected_xy[0]), float(selected_xy[1]))
+    nearest = MAIN_ROAD_TREE.nearest(point)
+    line = MAIN_ROAD_LINES[int(nearest)] if isinstance(nearest, (int, np.integer)) else nearest
+    return round(float(point.distance(line)), 1)
+
+
+def _collect_location_neighborhood(
+    latitude: float,
+    longitude: float,
+) -> LocationNeighborhood:
+    """Collect the raw criteria for one candidate using the training-time engine."""
+    selected_xy = _selected_point_xy(latitude, longitude)
+
+    nearby_pois, _ = _query_neighborhood(
+        POI_TREE, POI_XY, POI_DF, selected_xy
+    )
+    nearby_intersections, _ = _query_neighborhood(
+        INTERSECTION_TREE, INTERSECTION_XY, INTERSECTION_DF, selected_xy
+    )
+    nearby_restaurants, restaurant_distances = _query_neighborhood(
+        RESTAURANT_TREE, RESTAURANT_XY, RESTAURANT_DF, selected_xy
+    )
+    nearby_buildings, _ = _query_neighborhood(
+        BUILDING_TREE, BUILDING_XY, BUILDING_DF, selected_xy
+    )
+
+    poi_counts = nearby_pois["poi_type"].value_counts().to_dict()
+    raw_features: Dict[str, float] = {
+        column: float(poi_counts.get(column.removesuffix("_count_500m"), 0))
+        for column in [
+            *DEMAND_ANCHOR_COLUMNS,
+            *DEMAND_DAYTIME_COLUMNS,
+            *DEMAND_COMMERCIAL_COLUMNS,
+            "bus_stop_count_500m",
+            "parking_space_count_500m",
+        ]
+    }
+    raw_features["intersection_count_500m"] = float(len(nearby_intersections))
+    raw_features["building_count_500m"] = float(len(nearby_buildings))
+    raw_features["competitor_count_500m"] = float(len(nearby_restaurants))
+
+    ratings = pd.to_numeric(
+        nearby_restaurants["restaurant_rating"], errors="coerce"
+    )
+    reviews = pd.to_numeric(
+        nearby_restaurants["user_rating_count"], errors="coerce"
+    )
+    raw_features["avg_restaurant_rating_500m"] = (
+        float(ratings.mean()) if ratings.notna().any() else 0.0
+    )
+    raw_features["avg_review_ratings_500m"] = (
+        float(reviews.mean()) if reviews.notna().any() else 0.0
+    )
+
+    nearest_restaurant_m, _ = RESTAURANT_TREE.query(selected_xy, k=1)
+    raw_features["nearest_restaurant_m"] = float(nearest_restaurant_m)
+    raw_features["dist_to_main_road_m"] = _nearest_main_road_distance_m(selected_xy)
+
+    return LocationNeighborhood(
+        raw_features=raw_features,
+        nearby_pois=nearby_pois,
+        nearby_intersections=nearby_intersections,
+        nearby_restaurants=nearby_restaurants,
+        restaurant_distances=restaurant_distances,
+        nearby_buildings=nearby_buildings,
+    )
 
 
 def get_area_samples(search_area: str) -> pd.DataFrame:
-    """All analyzed dataset rows for one study area (used for IDW, benchmark stats, and leads)."""
+    """All analyzed dataset rows for one study area, used for comparisons."""
     area_samples = FEATURE_DF[FEATURE_DF["search_area"] == search_area]
     if area_samples.empty:
         raise ValueError(f"No feature samples are available for {search_area}.")
     return area_samples
 
 
+def _normalized_value(column: str, value: float, benefit: bool) -> float:
+    """Apply the frozen candidate-location min/max transformation.
+
+    Deployment values are clipped to the fitted range so an unusually dense or
+    sparse new site cannot produce a factor outside the model's training scale.
+    """
+    minimum, maximum = NORMALIZATION_BOUNDS[column]
+    if maximum == minimum:
+        return 0.0 if benefit else 1.0
+
+    normalized = (
+        (value - minimum) / (maximum - minimum)
+        if benefit
+        else (maximum - value) / (maximum - minimum)
+    )
+    return float(np.clip(normalized, 0.0, 1.0))
+
+
+def _mean_normalized(
+    raw_features: Dict[str, float],
+    columns: list[str],
+    benefit: bool,
+) -> float:
+    return float(np.mean([
+        _normalized_value(column, raw_features[column], benefit)
+        for column in columns
+    ]))
+
+
+def _group_raw_features(
+    raw_features: Dict[str, float],
+    search_area: str,
+) -> Dict[str, FeatureValue]:
+    """Recreate the four grouped model factors from direct local criteria."""
+    anchor = _mean_normalized(raw_features, DEMAND_ANCHOR_COLUMNS, benefit=True)
+    daytime = _mean_normalized(raw_features, DEMAND_DAYTIME_COLUMNS, benefit=True)
+    commercial = _mean_normalized(
+        raw_features, DEMAND_COMMERCIAL_COLUMNS, benefit=True
+    )
+    demand = float(np.mean([anchor, daytime, commercial]))
+
+    accessibility_parts = [
+        *[
+            _normalized_value(column, raw_features[column], benefit=True)
+            for column in ACCESSIBILITY_BENEFIT_COLUMNS
+        ],
+        *[
+            _normalized_value(column, raw_features[column], benefit=False)
+            for column in ACCESSIBILITY_COST_COLUMNS
+        ],
+    ]
+    accessibility = float(np.mean(accessibility_parts))
+
+    competition_parts = [
+        *[
+            _normalized_value(column, raw_features[column], benefit=True)
+            for column in COMPETITION_BENEFIT_COLUMNS
+        ],
+        *[
+            _normalized_value(column, raw_features[column], benefit=False)
+            for column in COMPETITION_COST_COLUMNS
+        ],
+    ]
+    competition = float(np.mean(competition_parts))
+    population = _normalized_value(
+        POPULATION_COLUMN,
+        raw_features[POPULATION_COLUMN],
+        benefit=True,
+    )
+
+    return {
+        "Demand": round(demand, 4),
+        "Accessibility": round(accessibility, 4),
+        "Competition": round(competition, 4),
+        "Population": round(population, 4),
+        "search_area": search_area,
+    }
+
+
 def collect_location_features(
     latitude: float, longitude: float, search_area: str
 ) -> Dict[str, FeatureValue]:
-    """Estimate the model's four factors from nearby updated-dataset rows."""
-
-    area_samples = get_area_samples(search_area)
-
-    distances = calculate_distances_m(latitude, longitude, area_samples)
-    neighbor_count = min(NEIGHBOR_COUNT, len(area_samples))
-    nearest_indices = np.argpartition(distances, neighbor_count - 1)[:neighbor_count]
-    nearest_distances = distances[nearest_indices]
-    nearest_samples = area_samples.iloc[nearest_indices]
-
-    # At an existing sample coordinate, use its values without interpolation.
-    exact_match = np.flatnonzero(nearest_distances < 0.01)
-    if exact_match.size:
-        values = nearest_samples.iloc[int(exact_match[0])][FACTOR_COLUMNS]
-    else:
-        weights = 1.0 / np.maximum(nearest_distances, 1.0) ** 2
-        values = nearest_samples[FACTOR_COLUMNS].multiply(weights, axis=0).sum()
-        values = values / weights.sum()
-
-    result: Dict[str, FeatureValue] = {
-        column: round(float(values[column]), 4) for column in FACTOR_COLUMNS
-    }
-    result["search_area"] = search_area
-    return result
+    """Calculate model factors from this coordinate's direct 500 m data."""
+    neighborhood = _collect_location_neighborhood(latitude, longitude)
+    return _group_raw_features(neighborhood.raw_features, search_area)
 
 
 MEANINGFUL_LEAD_ABSOLUTE_GAP = 0.15
@@ -201,14 +470,6 @@ def find_improvement_lead(
     }
 
 
-def _within_radius(
-    latitude: float, longitude: float, samples: pd.DataFrame
-) -> tuple[pd.DataFrame, np.ndarray]:
-    distances = calculate_distances_m(latitude, longitude, samples)
-    mask = distances <= FEATURE_RADIUS_M
-    return samples.loc[mask], distances[mask]
-
-
 # Internal category key -> RESTAURANT_DF column already carrying that count near each existing
 # restaurant. "_intersection_count_500m" / "_building_count_500m" are not in final_dataset.csv and
 # are computed once below with the same helpers used for a live query.
@@ -236,39 +497,20 @@ _POPULATION_TYPICAL_COLUMN = "_building_count_500m"
 
 def _compute_typical_reference() -> pd.DataFrame:
     """Augment a RESTAURANT_DF copy with intersection/building counts within 500 m of each
-    existing restaurant -- computed once at startup with the exact same helpers a live query
-    uses, so 'typical' values stay directly comparable to what collect_site_detail() reports.
+    existing restaurant, using the same global spatial indexes as a live query.
     "Typical" is deliberately anchored to existing restaurant locations (not an unbiased area
     grid): it answers "is my site as good as where restaurants already succeed," and lets 12 of
     14 categories reuse final_dataset.csv's already-precomputed columns instead of a full re-scan.
     """
     reference = RESTAURANT_DF.copy()
-    reference["_intersection_count_500m"] = 0
-    reference["_building_count_500m"] = 0
-
-    for area in reference["search_area"].unique():
-        area_mask = reference["search_area"] == area
-        area_intersections = INTERSECTION_DF[
-            INTERSECTION_DF["area"].astype(str).str.casefold() == str(area).casefold()
-        ]
-        buildings = BUILDING_DATA.get(area)
-
-        intersection_counts: list[int] = []
-        building_counts: list[int] = []
-        for _, row in reference.loc[area_mask].iterrows():
-            _, intersection_distances = _within_radius(
-                row["latitude"], row["longitude"], area_intersections
-            )
-            intersection_counts.append(int(intersection_distances.size))
-
-            if buildings is not None and not buildings.empty:
-                _, building_distances = _within_radius(row["latitude"], row["longitude"], buildings)
-                building_counts.append(int(building_distances.size))
-            else:
-                building_counts.append(0)
-
-        reference.loc[area_mask, "_intersection_count_500m"] = intersection_counts
-        reference.loc[area_mask, "_building_count_500m"] = building_counts
+    reference["_intersection_count_500m"] = [
+        len(INTERSECTION_TREE.query_ball_point(point, FEATURE_RADIUS_M))
+        for point in RESTAURANT_XY
+    ]
+    reference["_building_count_500m"] = [
+        len(BUILDING_TREE.query_ball_point(point, FEATURE_RADIUS_M))
+        for point in RESTAURANT_XY
+    ]
 
     return reference
 
@@ -404,11 +646,13 @@ def collect_site_detail(
     Breakdown, Competition list, and Location Snapshot map layers -- all
     derived from the same radius queries, computed once.
     """
-    area_pois = POI_DF[POI_DF["areas_found_in"].astype(str).str.contains(
-        search_area, case=False, regex=False, na=False
-    )]
-    nearby_pois, _ = _within_radius(latitude, longitude, area_pois)
-    counts = nearby_pois["poi_type"].value_counts().to_dict()
+    neighborhood = _collect_location_neighborhood(latitude, longitude)
+    raw_features = neighborhood.raw_features
+    nearby_pois = neighborhood.nearby_pois
+    nearby_intersections = neighborhood.nearby_intersections
+    nearby_restaurants = neighborhood.nearby_restaurants
+    restaurant_distances = neighborhood.restaurant_distances
+    nearby_buildings = neighborhood.nearby_buildings
 
     anchor_labels = {
         "cinema": "cinemas", "museum": "museums",
@@ -419,32 +663,17 @@ def collect_site_detail(
         "hospital": "hospitals", "clinic": "clinics",
     }
     commercial_labels = {"retail": "retail places", "bank": "banks"}
-    normalized_counts = {key: int(counts.get(key, 0)) for key in {
-        *anchor_labels, *daytime_labels, *commercial_labels,
-        "bus_stop", "parking_space",
-    }}
-
-    area_intersections = INTERSECTION_DF[
-        INTERSECTION_DF["area"].astype(str).str.casefold() == search_area.casefold()
-    ]
-    nearby_intersections, _ = _within_radius(
-        latitude, longitude, area_intersections
-    )
-
-    area_restaurants = RESTAURANT_DF[
-        RESTAURANT_DF["search_area"].astype(str).str.casefold() == search_area.casefold()
-    ]
-    nearby_restaurants, restaurant_distances = _within_radius(
-        latitude, longitude, area_restaurants
-    )
-    nearest_restaurant = (
-        int(round(float(restaurant_distances.min())))
-        if restaurant_distances.size else None
-    )
-
-    nearby_buildings, _ = _within_radius(
-        latitude, longitude, BUILDING_DATA[search_area]
-    )
+    normalized_counts = {
+        key: int(raw_features[f"{key}_count_500m"])
+        for key in {
+            *anchor_labels,
+            *daytime_labels,
+            *commercial_labels,
+            "bus_stop",
+            "parking_space",
+        }
+    }
+    nearest_restaurant = int(round(raw_features["nearest_restaurant_m"]))
 
     nearest_text = (
         f"; the nearest is about {nearest_restaurant} m away"
